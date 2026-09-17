@@ -62,7 +62,7 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "joint_trajectory_controller",
+            "joint_velocity_controller",
             "-c",
             "/controller_manager",
             "--controller-manager-timeout",

@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: annin_ar4_description
+    relative_path: urdf/ar.urdf.xacro
+  SRDF:
+    relative_path: config/srdf/ar.srdf.xacro
+  CONFIG:
+    author_name: DaanKrijnen
+    author_email: d.f.j.krijnen@student.tue.nl
+    generated_timestamp: 1734048000

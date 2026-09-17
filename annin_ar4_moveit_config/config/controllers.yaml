@@ -23,3 +23,20 @@
         default: true
         joints:
           - $(var tf_prefix)gripper_jaw1_joint
+
+/**controller_manager:
+  ros__parameters:
+    update_rate: 60
+
+    joint_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+/**/joint_velocity_controller:
+  ros__parameters:
+    joints:
+      - $(var tf_prefix)joint_1
+      - $(var tf_prefix)joint_2
+      - $(var tf_prefix)joint_3
+      - $(var tf_prefix)joint_4
+      - $(var tf_prefix)joint_5
+      - $(var tf_prefix)joint_6
