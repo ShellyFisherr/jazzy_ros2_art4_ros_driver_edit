@@ -51,30 +51,37 @@ private:
     void poll_keyboard()
     {
         int key = get_key();
-
-        if (key == -1)
+        
+        if (key != -1)
         {
-            //return; //nothing pressed
-            auto msg = std_msgs::msg::String();
-            msg.data = "";
+            char pressed = static_cast<char>(key);
 
-            publisher_->publish(msg);
+            //stop on c/C
+            if (pressed == 'c' || pressed == 'C')
+            {
+                std::cout << "stopping keyboard reader..." << std::endl;
 
-            return;
+                rclcpp::shutdown();
+                return;
+            }
+
+            current_key_ = std::string(1, pressed);
+
+            last_key_time_ = std::chrono::steady_clock::now();
+
         }
 
-        char pressed = static_cast<char>(key);
+        auto now = std::chrono::steady_clock::now();
 
-        //stop on c/C
-        if (pressed == 'c' || pressed == 'C')
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_key_time_);
+
+        if (elapsed > 100ms)
         {
-            std::cout << "Stopping keyboard reader..." << std::endl;
-            rclcpp::shutdown();
-            return;
+            current_key_ = "";
         }
 
         auto msg = std_msgs::msg::String();
-        msg.data = std::string(1, pressed);
+        msg.data = current_key_;
 
         publisher_->publish(msg);
 
@@ -109,6 +116,10 @@ private:
 
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_; //publisher
     rclcpp::TimerBase::SharedPtr timer_; //timer
+
+    std::string current_key_; //current active key
+    std::string last_key_; //previous key
+    std::chrono::steady_clock::time_point last_key_time_; //last keypress time
 };
 
 int main(int argc, char * argv[])

@@ -90,7 +90,7 @@ public:
         //move_group_->startStateMonitor();
 
         control_timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(16),
+            std::chrono::duration<double>(CONTROL_DT),
             std::bind(&DlsReducedController::control_loop, this), timer_callback_group_);
 
         RCLCPP_INFO(get_logger(), "DLS control timer created");
