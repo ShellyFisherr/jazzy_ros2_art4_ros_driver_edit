@@ -9,9 +9,12 @@
  * 
  * -------------------------
  * Publishing Topics
+ *  velocity_publisher_         /joint_velocity_controller/commands     std_msgs::msg::Float64MultiArray    (sends velocty commands for the joints)
  * 
  * -------------------------
  * Subscribed Topics
+ *  keyboard_subscriber_        /keyboard_inputs                        std_msgs::msg::String               (takes keyboard inputs as string)
+ *  joint_state_subscriber_     /joint_states                           sensor_msgs::msg::JointState        (takes the joint positions of the AR4 bot)
  * 
  * @author Daan Krijnen
  * @date September 10, 2026
@@ -116,10 +119,6 @@ private:
 
     rclcpp::Time last_input_time_;
     bool received_input_ = false;
-
-    
-    // std::vector<double> commanded_positions;
-    // bool command_state_initialized_ = false;
 
     bool orientation_reference_initialized_ = false;
     Eigen::Matrix3d locked_relative_orientation_;
@@ -240,13 +239,6 @@ private:
 
             current_positions.push_back(position->second);
         }
-
-        // if (!command_state_initialized_)
-        // {
-        //     commanded_positions = current_positions;
-        //     command_state_initialized_ = true;
-        // }
-
 
         robot_state_->setJointGroupPositions(joint_model_group_, current_positions);
         robot_state_->update();
@@ -498,31 +490,11 @@ private:
         std_msgs::msg::Float64MultiArray command;
         command.data.resize(joint_velocity.size());
 
-        //command.header.stamp = this->now();
-
-        // for (const std::string & joint_name : joint_model_group_->getActiveJointModelNames())
-        // {
-        //     command.joint_names.push_back(joint_name);
-        // }
-
-        // trajectory_msgs::msg::JointTrajectoryPoint point;
-
-        // point.positions = current_positions;
-        // point.velocities.resize(joint_velocity.size());
-
         for (Eigen::Index idx = 0; idx < joint_velocity.size(); ++idx)
         {
-            // point.velocities[idx] = joint_velocity(idx);
-
-            // commanded_positions[idx] += joint_velocity(idx) * CONTROL_DT;
-            // point.positions[idx] = commanded_positions[idx];
 
             command.data[idx] = joint_velocity(idx);
         }
-
-        // point.time_from_start = rclcpp::Duration::from_seconds(CONTROL_DT);
-
-        // command.points.push_back(point);
 
         velocity_publisher_->publish(command);
     }
@@ -546,13 +518,6 @@ int main(int argc, char * argv[])
     rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),2);
     executor.add_node(node);
     
-    // std::thread executor_thread([&executor]() {executor.spin(); });
-
-    // while (rclcpp::ok())
-    // {
-    //     std::this_thread::sleep_for(std::chrono::duration<double>(CONTROL_DT));
-    // }
-
     std::cerr << "========== CALLING INITIALIZE_SYSTEM ==========" << std::endl;
 
     node->initialize_system();

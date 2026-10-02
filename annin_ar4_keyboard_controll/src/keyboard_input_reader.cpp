@@ -118,7 +118,6 @@ private:
     rclcpp::TimerBase::SharedPtr timer_; //timer
 
     std::string current_key_; //current active key
-    std::string last_key_; //previous key
     std::chrono::steady_clock::time_point last_key_time_; //last keypress time
 };
 
