@@ -62,13 +62,28 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "joint_velocity_controller",
+            "joint_trajectory_controller",
             "-c",
             "/controller_manager",
             "--controller-manager-timeout",
             "120",
         ],
     )
+
+    spawn_velocity_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "joint_velocity_controller",
+            "-c",
+            "/controller_manager",
+            "--controller-manager-timeout", 
+            "120",
+            "--inactive",
+        ],
+    )
+
+
 
     gripper_controller_spawner = Node(
         package="controller_manager",
@@ -145,5 +160,6 @@ def generate_launch_description():
     ld.add_action(joint_state_broadcaster)
     ld.add_action(spawn_joint_controller)
     ld.add_action(gripper_controller_spawner)
+    ld.add_action(spawn_velocity_controller)
     
     return ld

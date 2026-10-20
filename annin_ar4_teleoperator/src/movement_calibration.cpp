@@ -21,7 +21,7 @@
  * -------------------------
  * Subscribed Topics
  * 
- *  pose_subscription_      /libsurvive/velocity       geometry_msgs::msg::TwistStamped        (used to get reference frame)
+ *  pose_subscription_      /tracker/pose       geometry_msgs::msg::PoseStamped        (used to get reference frame)
  * 
  * @author Daan Krijnen
  * @date October 01, 2026
@@ -50,7 +50,7 @@
 #include <yaml-cpp/yaml.h>
 #include <cstdlib>
 #include <filesystem>
-
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 class MovementCalibration : public rclcpp::Node
 {
@@ -226,7 +226,8 @@ private:
     std::cout << "Recorded X end:" << std::endl;
     print_vector(x_end);
 
-    Eigen::Vector3d x_direction = x_end - x_start;
+     //robot is flipped for some reason, this flips the signs, fixing the frame
+    Eigen::Vector3d x_direction = x_start - x_end;
 
     if (x_direction.norm() < 0.05)
     {
@@ -259,7 +260,8 @@ private:
     std::cout << "Recorded Y end" << std::endl;
     print_vector(y_end);
 
-    Eigen::Vector3d y_raw = y_end - y_start;
+     //robot is flipped for some reason, this flips the signs, fixing the frame
+    Eigen::Vector3d y_raw = y_start - y_end; 
 
     if (y_raw.norm() < 0.05)
     {
@@ -377,7 +379,13 @@ private:
       return;
     }
 
-    const std::filesystem::path config_dir = std::filesystem::path(home_dir) / ".config" / "annin_ar4_teleoperator";
+    // const std::filesystem::path config_dir = std::filesystem::path(home_dir) / ".config" / "annin_ar4_teleoperator";
+    // const std::filesystem::path calibration_file = config_dir / "calibration.yaml";
+
+    const std::filesystem::path package_share =
+      ament_index_cpp::get_package_share_directory("annin_ar4_teleoperator");
+
+    const std::filesystem::path config_dir = package_share / "config";
     const std::filesystem::path calibration_file = config_dir / "calibration.yaml";
 
     try
@@ -496,6 +504,7 @@ private:
 
     RCLCPP_INFO(get_logger(), "Calibration saved to: %s", calibration_file.c_str());
     
+    rclcpp::shutdown();
   }
 };
 

@@ -80,6 +80,41 @@ def generate_launch_description():
         allow_substs=True,
     )
 
+    calibration = load_yaml("annin_ar4_teleoperator",
+                            os.path.join("config", "translation_scaling_result.yaml"),
+    )["translation_scaling"]
+
+    calibration_parameters = {"translation_scale": float(calibration["scale"]),
+                              "robot_near": [float(value) for value in calibration["robot_near"]],                          
+    }
+
+    node_settings = load_yaml("annin_ar4_teleoperator",
+                              os.path.join("config", "DLS_controller.yaml"),
+    )["DLS_Controller"]["ros__parameters"]
+
+    node_settings_parameters = {"CONTROL_DT": float(node_settings["controller_frequency"]),
+                                "DEBUG": node_settings["show_logs"],
+                                "deadzone_velocity": float(node_settings["deadzone_velocity"]),
+                                "deadzone_twist": float(node_settings["deadzone_twist"]),
+                                "timeout_age": float(node_settings["timeout_age"]),
+                                "deadzone_translation_error": float(node_settings["deadzone_translation_error"]),
+                                "deadzone_orientaiton_error": float(node_settings["deadzone_orientation_error"]),
+                                "position_gain": float(node_settings["position_gain"]),
+                                "orientation_gain": float(node_settings["orientation_gain"]),
+                                "DLS_damping": float(node_settings["DLS_damping"]),
+                                "velocity_limit": node_settings["use_velocity_limit"],
+                                "acceleration_limit": node_settings["use_acceleration_limit"],
+                                "max_velocity": [float(value) for value in node_settings["max_velocity"]],
+                                "max_acceleration": [float(value) for value in node_settings["max_acceleration"]],
+    }
+
+    frame_translation = load_yaml("annin_ar4_teleoperator",
+                                            os.path.join("config", "calibration.yaml"),
+    )["calibration"]
+
+    frame_translation_parameters = {"target_frame": frame_translation["target_frame"],
+    }
+
     dls_node = Node(
         package="annin_ar4_teleoperator",
         executable="dls_teleoperation_controller",
@@ -89,6 +124,9 @@ def generate_launch_description():
             robot_description_semantic,
             robot_description_kinematics,
             joint_limits,
+            calibration_parameters,
+            node_settings_parameters,
+            frame_translation_parameters,
             {"use_sim_time": use_sim_time},
         ],
     )

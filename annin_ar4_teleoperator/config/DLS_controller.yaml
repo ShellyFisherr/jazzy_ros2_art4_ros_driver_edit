@@ -1,0 +1,16 @@
+DLS_Controller:
+  ros__parameters:
+    controller_frequency: 60.0
+    show_logs: true
+    deadzone_velocity: 0.002      
+    deadzone_twist: 0.008         
+    timeout_age: 0.1              
+    deadzone_translation_error: 0.002
+    deadzone_orientation_error: 0.008
+    position_gain: 1.0
+    orientation_gain: 1.0
+    DLS_damping: 0.005
+    use_velocity_limit: true
+    use_acceleration_limit: true
+    max_velocity: [60.0, 60.0, 60.0, 60.0, 60.0, 60.0]
+    max_acceleration: [30.0, 30.0, 30.0, 30.0, 30.0, 30.0]

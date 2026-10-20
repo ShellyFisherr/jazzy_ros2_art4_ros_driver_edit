@@ -1,0 +1,11 @@
+translation_scaling:
+  ros__parameters:
+    target_frame: "teleop_world"
+
+    robot_near: [0.0, -0.25, 0.3] #Robot is pointing towards -y originally, so +y is the back of the bot
+    robot_far: [0.0, -0.6, 0.3]
+
+    capture_sample_count: 30
+    minimum_tracker_movement: 0.05
+    minimum_robot_movement: 0.01
+    maximum_capture_spread: 0.02

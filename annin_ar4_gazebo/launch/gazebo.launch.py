@@ -99,8 +99,18 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "joint_velocity_controller", "-c", "/controller_manager",
+            "joint_trajectory_controller", "-c", "/controller_manager",
             "--controller-manager-timeout", "60"
+        ],
+    )
+
+    spawn_velocity_controller = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "joint_velocity_controller", "-c", "/controller_manager",
+            "--controller-manager-timeout", "60",
+            "--inactive",
         ],
     )
 
@@ -149,6 +159,7 @@ def generate_launch_description():
         gazebo_spawn_robot,
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
+        spawn_velocity_controller,
         initial_joint_controller_spawner_started,
         gripper_joint_controller_spawner_started,
     ])

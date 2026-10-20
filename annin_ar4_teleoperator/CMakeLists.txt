@@ -19,6 +19,12 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(Threads REQUIRED)
+find_package(control_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
 
 set(dependencies
   rclcpp
@@ -33,7 +39,31 @@ set(dependencies
   tf2_ros
   tf2_geometry_msgs
   yaml-cpp
+  ament_index_cpp
+  Threads
+  control_msgs
+  rclcpp_action
+  controller_manager_msgs
   )
+
+add_library(workspace_sampling_lib src/workspace_sampling.cpp)
+
+target_include_directories(workspace_sampling_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/headers>
+  $<INSTALL_INTERFACE:include>
+  )
+ament_target_dependencies(workspace_sampling_lib ${dependencies})
+
+add_executable(workspace_sampling src/workspace_sampling_node.cpp)
+ament_target_dependencies(workspace_sampling ${dependencies})
+target_include_directories(workspace_sampling PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(workspace_sampling workspace_sampling_lib)
+
+add_executable(translation_scaling src/translation_scaling.cpp)
+ament_target_dependencies(translation_scaling ${dependencies})
+target_link_libraries(translation_scaling Eigen3::Eigen yaml-cpp Threads::Threads)
+target_compile_features(translation_scaling PRIVATE cxx_std_17)
 
 add_executable(dls_teleoperation_controller src/DLS_teleoperation_controller.cpp)
 ament_target_dependencies(dls_teleoperation_controller ${dependencies})
@@ -51,10 +81,27 @@ install(
   dls_teleoperation_controller
   frame_translator
   movement_calibration
-  DESTINATION
-  lib/${PROJECT_NAME}
+  workspace_sampling_lib
+  workspace_sampling
+  translation_scaling
+  EXPORT
+  workspace_sampling_targets
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
+install(
+  DIRECTORY headers/
+  DESTINATION include
+)
+
+install(
+  DIRECTORY 
+  launch 
+  config
+  DESTINATION share/${PROJECT_NAME}
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
