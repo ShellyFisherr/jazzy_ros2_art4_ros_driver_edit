@@ -523,7 +523,11 @@ At this point, the system can be run on the real hardware.
 ---
 ## **Usage**
 
-To be updated at later date (want everything in 1 launch file if possible)
+Run the movement-frame calibration from a terminal with the tracker pose publisher running:
+```
+ros2 launch annin_ar4_teleoperator movement_calibration.launch.py
+```
+Follow the prompts in the terminal and press ENTER to record each start and end position. The node reads ENTER from the controlling terminal, so launch it from an interactive terminal rather than a background process.
 
 
 ## **Parameters**

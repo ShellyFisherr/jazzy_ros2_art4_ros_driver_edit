@@ -28,15 +28,20 @@
  */
 
 #include <cmath>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <poll.h>
 #include <string>
 #include <thread>
 #include <chrono>
 #include <stdexcept>
+#include <unistd.h>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -147,15 +152,80 @@ private:
     return latest_tracker_position_;
   }
 
-  void wait_for_enter(const std::string & message)
+  bool wait_for_enter(const std::string & message)
   {
     std::cout << std::endl;
     std::cout << message << std::endl;
     std::cout << "Press ENTER when ready..." << std::endl;
 
-    std::string input;
+    const int terminal_fd = ::open("/dev/tty", O_RDONLY);
+    if (terminal_fd < 0)
+    {
+      RCLCPP_ERROR(get_logger(),
+        "Could not open controlling terminal /dev/tty: %s",
+        std::strerror(errno));
+      rclcpp::shutdown();
+      return false;
+    }
 
-    std::getline(std::cin, input);
+    while (rclcpp::ok())
+    {
+      struct pollfd input_descriptor{};
+      input_descriptor.fd = terminal_fd;
+      input_descriptor.events = POLLIN;
+
+      const int poll_result = ::poll(&input_descriptor, 1, 100);
+      if (poll_result < 0)
+      {
+        if (errno == EINTR)
+        {
+          continue;
+        }
+
+        const int error = errno;
+        ::close(terminal_fd);
+        RCLCPP_ERROR(get_logger(),
+          "Error while waiting for terminal input: %s",
+          std::strerror(error));
+        rclcpp::shutdown();
+        return false;
+      }
+
+      if (poll_result == 0)
+      {
+        continue;
+      }
+
+      if ((input_descriptor.revents & POLLIN) != 0)
+      {
+        char character = '\0';
+        const ssize_t bytes_read = ::read(terminal_fd, &character, sizeof(character));
+
+        if (bytes_read <= 0)
+        {
+          ::close(terminal_fd);
+          RCLCPP_ERROR(get_logger(), "Terminal input closed during calibration.");
+          rclcpp::shutdown();
+          return false;
+        }
+
+        if (character == '\n')
+        {
+          ::close(terminal_fd);
+          return true;
+        }
+      }
+      else if ((input_descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+      {
+        ::close(terminal_fd);
+        RCLCPP_ERROR(get_logger(), "Terminal input became unavailable during calibration.");
+        rclcpp::shutdown();
+        return false;
+      }
+    }
+
+    ::close(terminal_fd);
+    return false;
   }
 
   void wait_for_tracker()
@@ -206,7 +276,10 @@ private:
     std::cout << std::endl;
     std::cout << "Place tracker at starting position." << std::endl;
 
-    wait_for_enter("Keep the tracker still.");
+    if (!wait_for_enter("Keep the tracker still."))
+    {
+      return;
+    }
 
     Eigen::Vector3d x_start = get_tracker_position();
 
@@ -220,7 +293,10 @@ private:
     std::cout << "positive X direction (right)" << std::endl;
     std::cout << "Move tracker approx 20 to 40 cm" << std::endl;
 
-    wait_for_enter("keep tracker still at end position");
+    if (!wait_for_enter("keep tracker still at end position"))
+    {
+      return;
+    }
     Eigen::Vector3d x_end = get_tracker_position();
 
     std::cout << "Recorded X end:" << std::endl;
@@ -244,7 +320,10 @@ private:
     std::cout << "=============================================" << std::endl;
     std::cout << "Return tracker to convenient position" << std::endl;    
 
-    wait_for_enter("Keep tracker still at start position.");
+    if (!wait_for_enter("Keep tracker still at start position."))
+    {
+      return;
+    }
     Eigen::Vector3d y_start = get_tracker_position();
 
     std::cout << "Recorded Y start:" << std::endl;
@@ -254,7 +333,10 @@ private:
     std::cout << "positive Y direction (forwards)" << std::endl;
     std::cout << "Move tracker approx 20 to 40 cm" << std::endl;
 
-    wait_for_enter("Keep tracker still at end position");
+    if (!wait_for_enter("Keep tracker still at end position"))
+    {
+      return;
+    }
     Eigen::Vector3d y_end = get_tracker_position();
 
     std::cout << "Recorded Y end" << std::endl;
