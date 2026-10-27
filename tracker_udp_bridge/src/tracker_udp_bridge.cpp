@@ -59,8 +59,8 @@ public:
       last_sequence_(0),
       max_publish_interval_(0.0)
   {
-    udp_ip_ = this->declare_parameter<std::string>("udp_ip", "0.0.0.0");
-    udp_port_ = this->declare_parameter<int>("udp_port", 5005);
+    udp_ip_ = declare_parameter<std::string>("udp_ip", "0.0.0.0");
+    udp_port_ = declare_parameter<int>("udp_port", 5005);
 
     update_rate_ = 100.0;
     max_data_age_ = 0.1;
@@ -125,7 +125,7 @@ public:
     {
       close (socket_fd_);
 
-      throw std::runtime_error("Failed to bind UDP socket to port 5005");
+      throw std::runtime_error("Failed to bind UDP socket to port");
     }
 
 

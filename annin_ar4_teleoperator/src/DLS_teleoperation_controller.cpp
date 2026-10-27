@@ -3,56 +3,62 @@
  * @brief A more advanced ROS2 and MoveIt 2 framework to move the AR4 robotic arm (based on MK.5)
  * 
  * This program provides a framework on how to use ROS2 and MoveIt 2 to connect to the
- * AR4 robotic arm and move it with continuous movement. It will use DLS and null-space 
- * controll to try and deal with singularities.
+ * AR4 robotic arm and move it with continuous movement.
+ * The controller maps tracker motion and pose error to joint velocity commands
+ * using a weighted damped least-squares QP with joint velocity and acceleration
+ * constraints.
  * It sets up a node, and uses twist to directly move the robot, bypassing planning
  * 
  * -------------------------
  * Publishing Topics
- *  velocity_publisher_         /joint_velocity_controller/commands     std_msgs::msg::Float64MultiArray    (sends velocty commands for the joints)
+ *  velocity_publisher_         /joint_velocity_controller/commands     std_msgs::msg::Float64MultiArray    (sends velocity commands for the joints)
  * 
  * -------------------------
  * Subscribed Topics
  *  
  *  joint_state_subscriber_     /joint_states                           sensor_msgs::msg::JointState        (takes the joint positions of the AR4 bot)
  *  velocity_subscription_      /velocity_world                         geometry_msgs::msg::TwistStamped    (velocity inputs in world frame)
+ *  pose_subscriber_            /pose_world                             geometry_msgs::msg::PoseStamped     (tracker pose inputs in world frame)
  * 
  * @author Daan Krijnen
  * @date September 10, 2026
  */
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <functional>
+#include <iomanip>
+#include <iostream>
+#include <iterator>
+#include <limits>
 #include <memory>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <string>
-#include <rclcpp/rclcpp.hpp>
-#include <trajectory_msgs/msg/joint_trajectory.hpp>
-#include <std_msgs/msg/string.hpp>
-#include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <unordered_map>
 #include <vector>
-#include <thread>
-#include <Eigen/Dense>
+
+#include <controller_manager_msgs/srv/switch_controller.hpp>
+#include <control_msgs/action/follow_joint_trajectory.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
+#include <trajectory_msgs/msg/joint_trajectory.hpp>
+
 #include <moveit/robot_model_loader/robot_model_loader.hpp>
 #include <moveit/robot_state/robot_state.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
-#include <mutex>
-#include <unordered_map>
-#include <stdexcept>
-#include <cmath>
-#include <algorithm>
-#include <Eigen/Geometry>
-#include <std_msgs/msg/float64_multi_array.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <control_msgs/action/follow_joint_trajectory.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
-#include <controller_manager_msgs/srv/switch_controller.hpp>
-#include <sstream>
-#include <iomanip>
-#include <array>
+#include <OsqpEigen/OsqpEigen.h>
 
-//constexpr double CONTROL_DT_ = 1.0 / 60.0; // Timer in seconds . (base = 60 Hz)
-//constexpr bool DEBUG_ = true; // enable debug messages.
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <Eigen/Sparse>
 
 constexpr double PI = 3.14159265359;
 
@@ -62,6 +68,7 @@ class DlsReducedController : public rclcpp::Node
     using TrajectoryGoalHandle = rclcpp_action::ClientGoalHandle<FollowTrajectory>;
     using SwitchControllers = controller_manager_msgs::srv::SwitchController;
     using JointVector = Eigen::Matrix<double, 6, 1>;
+    using JointMatrix = Eigen::Matrix<double, 6, 6>;
 
 public:
     DlsReducedController(const rclcpp::NodeOptions & node_options)
@@ -69,6 +76,8 @@ public:
     {
 
         load_parameters();
+
+        initialize_ik_solver();
 
         velocity_subscription_ = this->create_subscription<geometry_msgs::msg::TwistStamped>(
             "/velocity_world", 10, std::bind(&DlsReducedController::velocity_callback, this, std::placeholders::_1));
@@ -195,6 +204,14 @@ public:
 
 private:
 
+    struct TrackingErrors
+    {
+        Eigen::Vector3d position_error = Eigen::Vector3d::Zero();
+        Eigen::Vector3d error_outside = Eigen::Vector3d::Zero();
+        Eigen::Vector3d angular_error = Eigen::Vector3d::Zero();
+        double distance = 0.0;
+    };
+
     rclcpp::Client<SwitchControllers>:: SharedPtr controller_switch_client_;
 
     rclcpp_action::Client<FollowTrajectory>::SharedPtr trajectory_client_;
@@ -202,50 +219,44 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_;
     rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_subscription_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscriber_;
+
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr velocity_publisher_;
 
     rclcpp::TimerBase::SharedPtr startup_timer_;
-
-    moveit::core::RobotModelConstPtr robot_model_;
-    std::chrono::steady_clock::time_point joint_state_received_at_;
-
-    sensor_msgs::msg::JointState latest_joint_state_;
-    std::mutex joint_state_mutex_;
-    bool received_joint_state_ = false;
-
     rclcpp::TimerBase::SharedPtr control_timer_;
-    std::shared_ptr<moveit::core::RobotState> robot_state_;
-    const moveit::core::JointModelGroup * joint_model_group_;
 
-    std::vector<double> current_positions;
     rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
 
-    rclcpp::Time last_input_time_;
-    bool received_input_ = false;
+    OsqpEigen::Solver ik_solver_;
 
-    bool orientation_reference_initialized_ = false;
-    Eigen::Matrix3d locked_relative_orientation_;
-    Eigen::Matrix3d locked_base_orientation_;
+    moveit::core::RobotModelConstPtr robot_model_;
 
-    Eigen::Vector3d robot_near_ = Eigen::Vector3d::Zero();
+    const moveit::core::JointModelGroup * joint_model_group_;
 
-    Eigen::Vector3d tracker_pose_ = Eigen::Vector3d::Zero();
+    std::chrono::steady_clock::time_point joint_state_received_at_;
+    std::chrono::steady_clock::time_point last_velocity_time_;
+    std::chrono::steady_clock::time_point tracker_pose_received_at_;
+    std::chrono::steady_clock::time_point previous_command_time_;
+    std::chrono::steady_clock::time_point previous_joint_velocity_time_;
 
-    Eigen::Vector3d previous_ee_position_;
-    std::chrono::steady_clock::time_point previous_ee_time_;
-    bool previous_ee_valid_ = false;
+    sensor_msgs::msg::JointState latest_joint_state_;
 
-    double deadzone_velocity_;
-    double deadzone_twist_;
-
-    double CONTROL_DT_;
-    bool DEBUG_;
-
-    double translation_scale_;
-    double timeout_age_;
-
-
+    std::mutex joint_state_mutex_;
+    std::mutex tracker_pose_mutex_;
     std::mutex velocity_mutex_;
+
+    std::shared_ptr<moveit::core::RobotState> robot_state_;
+    
+    std::string tracker_frame_;
+    std::string end_effector_name_;
+
+    geometry_msgs::msg::PoseStamped latest_tracker_pose_;
+    
+    Eigen::Vector3d robot_near_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d tracker_reference_position_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d robot_reference_position_ = Eigen::Vector3d::Zero();
+    Eigen::Quaterniond tracker_reference_orientation_ = Eigen::Quaterniond::Identity();
+    Eigen::Quaterniond robot_reference_orientation_ = Eigen::Quaterniond::Identity();
 
     double vx_ = 0.0;
     double vy_ = 0.0;
@@ -254,39 +265,40 @@ private:
     double wy_ = 0.0;
     double wz_ = 0.0;
 
-    std::string tracker_frame_;
-
-    std::chrono::steady_clock::time_point last_velocity_time_;
-    bool received_velocity_ = false;
-
-    geometry_msgs::msg::PoseStamped latest_tracker_pose_;
-    std::mutex tracker_pose_mutex_;
-    bool received_tracker_pose_ = false;
-    std::chrono::steady_clock::time_point tracker_pose_received_at_;
-
-    bool feedback_reference_set_ = false;
-    Eigen::Vector3d tracker_reference_position_ = Eigen::Vector3d::Zero();
-    Eigen::Vector3d robot_reference_position_ = Eigen::Vector3d::Zero();
-    Eigen::Quaterniond tracker_reference_orientation_ = Eigen::Quaterniond::Identity();
-    Eigen::Quaterniond robot_reference_orientation_ = Eigen::Quaterniond::Identity();
-
     double position_gain_;
     double orientation_gain_;
     double deadzone_translation_error_;
     double deadzone_orientation_error_;
+    double deadzone_velocity_;
+    double deadzone_twist_;
     double DLS_damping_;
+    double braking_delay_;
+    double stopping_margin_;
+    double velocity_damping_gain_;
+    double position_prio_distance_;
+    double position_prio_max_mult_;
+    double translation_scale_;
+    double timeout_age_;
+    double CONTROL_DT_;
+    double position_priority_weight_;
+    double velocity_priority_weight_;
 
     JointVector previous_commanded_velocity_ = JointVector::Zero();
-    std::chrono::steady_clock::time_point previous_command_time_;
-    bool velocity_limiter_initialized_ = false;
-
+    
     std::unordered_map<std::string, double> previous_joint_velocities_;
     std::unordered_map<std::string, double> latest_joint_accelerations_;
-    std::chrono::steady_clock::time_point previous_joint_velocity_time_;
-    bool have_previous_joint_velocity_sample_ = false;
 
     bool velocity_limiting_;
     bool acceleration_limiting_;
+    bool DEBUG_;
+    
+    bool ik_solver_initialized_ = false;
+    bool have_previous_joint_velocity_sample_ = false;
+    bool velocity_limiter_initialized_ = false;
+    bool feedback_reference_set_ = false;
+    bool received_tracker_pose_ = false;
+    bool received_velocity_ = false;
+    bool received_joint_state_ = false;
 
     std::array<double, 6> max_joint_velocity_;
     std::array<double ,6> max_joint_acceleration_;
@@ -369,14 +381,14 @@ private:
 
         deadzone_translation_error_ = declare_parameter<double>("deadzone_translation_error", 0.0);
 
-        if (!std::isfinite(deadzone_translation_error_) || deadzone_translation_error_ < 0.002)
+        if (!std::isfinite(deadzone_translation_error_) || deadzone_translation_error_ < 0.0)
         {
             throw std::runtime_error("deadzone translation error must be finite and larger or equal to zero");
         }
 
         deadzone_orientation_error_ = declare_parameter<double>("deadzone_orientation_error", 0.0);
 
-        if (!std::isfinite(deadzone_orientation_error_) || deadzone_orientation_error_ < 0.008)
+        if (!std::isfinite(deadzone_orientation_error_) || deadzone_orientation_error_ < 0.0)
         {
             throw std::runtime_error("deadzone orientation error must be finite and larger or equal to zero");
         }
@@ -403,12 +415,14 @@ private:
         }
 
         const auto max_velocity = declare_parameter<std::vector<double>>("max_velocity", std::vector<double>(6, 60.0));
-        const auto max_acceleration = declare_parameter<std::vector<double>>("max_acceleration", std::vector<double>(6, 30.0));
 
         if (max_velocity.size() != max_joint_velocity_.size())
         {
             throw std::runtime_error("max_velocity must have six values");
         }
+
+        const auto max_acceleration = declare_parameter<std::vector<double>>("max_acceleration", std::vector<double>(6, 30.0));
+
 
         if (max_acceleration.size() != max_joint_acceleration_.size())
         {
@@ -430,19 +444,76 @@ private:
         velocity_limiting_ = declare_parameter<bool>("velocity_limit", true);
         acceleration_limiting_ = declare_parameter<bool>("acceleration_limit", true);
 
+        braking_delay_ = declare_parameter<double>("braking_delay", 0.1);
+
+        if (!std::isfinite(braking_delay_) || braking_delay_ <= 0.0)
+        {
+            throw std::runtime_error("braking delay must be positive and finite");
+        }
+
+        stopping_margin_ = declare_parameter<double>("stopping_margin",0.01);
+
+        if (!std::isfinite(stopping_margin_) || stopping_margin_ <= 0.0)
+        {
+            throw std::runtime_error("stopping margin must be positive and finite");
+        }
+
+        velocity_damping_gain_ = declare_parameter<double>("brake_damping_gain", 1.0);
+
+        if (!std::isfinite(velocity_damping_gain_) || velocity_damping_gain_ <= 0.0)
+        {
+            throw std::runtime_error("brake damping gain must be positive and finite");
+        }
+
+        velocity_priority_weight_ = declare_parameter<double>("velocity_weight", 1.0);
+
+        if (!std::isfinite(velocity_priority_weight_) || velocity_priority_weight_ <= 0.0)
+        {
+            throw std::runtime_error("velocity priority must be positive and finite");
+        }
+
+        position_priority_weight_ = declare_parameter<double>("position_weight", 1.0);
+
+        if (!std::isfinite(position_priority_weight_) || position_priority_weight_ <= 0.0)
+        {
+            throw std::runtime_error("position priority must be positive and finite");
+        }
+
+        position_prio_distance_ = declare_parameter<double>("position_priority_distance", 0.05);
+
+        if (!std::isfinite(position_prio_distance_) || position_prio_distance_ <= 0.0)
+        {
+            throw std::runtime_error("position priority distance must be positive and finite");
+        }
+
+        position_prio_max_mult_ = declare_parameter<double>("position_priority_max_multiplier", 10.0);
+
+        if (!std::isfinite(position_prio_max_mult_) || position_prio_max_mult_ <= 0.0)
+        {
+            throw std::runtime_error("position priority max multiplier must be positive and finite");
+        }
+
+        end_effector_name_ = declare_parameter<std::string>("end_effector_name", "Unknown");
+
+        if (end_effector_name_.empty())
+        {
+            throw std::runtime_error("End effector name cannot be empty");
+        }
+
         std::cerr << "=============================================" << std::endl;
         std::cerr << "              Parameters Loaded" << std::endl;
         std::cerr << "=============================================" << std::endl;
         std::cerr << "   controller timer:           " << CONTROL_DT_ << " [s]" << std::endl;
         std::cerr << "   shows logs:                 " << (DEBUG_ ? "True":"False") << std::endl;
         std::cerr << "   translation scale:          " << translation_scale_ << std::endl;
+        std::cerr << "   end effector name:          " << end_effector_name_ << std::endl;
         std::cerr << "   robot start position:    x: " << robot_near_.x() << " [m]" << std::endl;
         std::cerr << "                            y: " << robot_near_.y() << " [m]" << std::endl;
         std::cerr << "                            z: " << robot_near_.z() << " [m]" << std::endl;
         std::cerr << "   deadzone velocity:          " << deadzone_velocity_ << " [m/s]" << std::endl;
         std::cerr << "   deadzone twist:             " << deadzone_twist_ << " [rad/s]" << std::endl;
         std::cerr << "   tracker frame:              " << tracker_frame_ << std::endl;
-        std::cerr << "   timeout age:                " << timeout_age_ << " [m/s]" << std::endl;
+        std::cerr << "   timeout age:                " << timeout_age_ << " [s]" << std::endl;
         std::cerr << "   deadzone translation error: " << deadzone_translation_error_ << " [m]" << std::endl;
         std::cerr << "   deadzone orientation error: " << deadzone_orientation_error_ << " [rad]" << std::endl;
         std::cerr << "   position gain:              " << position_gain_ << std::endl;
@@ -462,7 +533,97 @@ private:
         std::cerr << "                           J4: " << max_joint_acceleration_[3] << " [rad/s^2]" << std::endl;
         std::cerr << "                           J5: " << max_joint_acceleration_[4] << " [rad/s^2]" << std::endl;
         std::cerr << "                           J6: " << max_joint_acceleration_[5] << " [rad/s^2]" << std::endl;
+        std::cerr << "   braking delay:              " << braking_delay_ << " [s]" << std::endl;
+        std::cerr << "   stopping margin:            " << stopping_margin_ << " [m]" << std::endl;
+        std::cerr << "   brake damping gain:         " << velocity_damping_gain_ << std::endl;
+        std::cerr << "   velocity priority:          " << velocity_priority_weight_ << std::endl;
+        std::cerr << "   position priority:          " << position_priority_weight_ << std::endl;
+        std::cerr << "   position priority distance: " << position_prio_distance_ << " [m]" << std::endl;
+        std::cerr << "   priority max multiplier:    " << position_prio_max_mult_ << std::endl;
         std::cerr << "=============================================" << std::endl;
+    }
+
+    void initialize_ik_solver()
+    {
+        Eigen::SparseMatrix<double> hessian(6, 6);
+
+        std::vector<Eigen::Triplet<double>> hessian_triplets;
+        hessian_triplets.reserve(21);
+
+        for (int col = 0; col < 6; ++col)
+        {
+            for (int row = 0; row <= col; ++row)
+            {
+                // Explicitly retain every upper-triangular entry,
+                // including entries that initially have value zero.
+                hessian_triplets.emplace_back(row, col, row == col ? 1.0 : 0.0);
+            }
+        }
+
+        hessian.setFromTriplets(
+            hessian_triplets.begin(),
+            hessian_triplets.end());
+
+        Eigen::SparseMatrix<double> constraints(6, 6);
+        constraints.setIdentity();
+
+        hessian.makeCompressed();
+        constraints.makeCompressed();
+
+        Eigen::VectorXd gradient = Eigen::VectorXd::Zero(6);
+        Eigen::VectorXd lower_bound = Eigen::VectorXd::Constant(6, -1.0);
+        Eigen::VectorXd upper_bound = Eigen::VectorXd::Constant(6, 1.0);
+
+        auto & data = ik_solver_.data();
+
+        ik_solver_.settings()->setVerbosity(false);
+        ik_solver_.settings()->setWarmStart(true);
+
+        data->setNumberOfVariables(6);
+        data->setNumberOfConstraints(6);
+
+        RCLCPP_INFO(get_logger(),
+            "Initializing OSQP solver...");
+
+        if (!data->setHessianMatrix(hessian))
+        {
+            throw std::runtime_error("OSQP: setHessianMatrix failed");
+        }
+
+        if (!data->setGradient(gradient))
+        {
+            throw std::runtime_error("OSQP: setGradient failed");
+        }
+
+        if (!data->setLinearConstraintsMatrix(constraints))
+        {
+            throw std::runtime_error("OSQP: setLinearConstraintsMatrix failed");
+        }
+
+        if (!data->setLowerBound(lower_bound))
+        {
+            throw std::runtime_error("OSQP: setLowerBound failed");
+        }
+
+        if (!data->setUpperBound(upper_bound))
+        {
+            throw std::runtime_error("OSQP setUpperBound failed");
+        }
+
+
+        if (!ik_solver_.initSolver())
+        {
+            throw std::runtime_error(
+                "Failed to initialize constrained IK solver");
+
+            return;
+        }
+
+        RCLCPP_INFO(get_logger(),
+            "OSQP solver initialized successfully.");
+
+        ik_solver_initialized_ = true;
+
     }
 
     void launch_initial_pose(const moveit::core::RobotModelConstPtr & robot_model)
@@ -502,11 +663,11 @@ private:
         goal_state.setJointGroupPositions(joint_model_group_, measured_positions);
         goal_state.update();
 
-        const auto * end_effector = robot_model->getLinkModel("ee_link");
+        const auto * end_effector = robot_model->getLinkModel(end_effector_name_);
 
         if (end_effector == nullptr)
         {
-            throw std::runtime_error("ee_link not found");
+            throw std::runtime_error(end_effector_name_ + " not found");
         }
 
         Eigen::Isometry3d target_pose = goal_state.getGlobalLinkTransform(end_effector);
@@ -516,7 +677,7 @@ private:
         if (!goal_state.setFromIK(
             joint_model_group_,
             target_pose,
-            "ee_link",
+            end_effector_name_,
             1.0))
         {
             throw std::runtime_error("No IK solution found for robot_near: [" +
@@ -566,6 +727,7 @@ private:
 
         trajectory_client_->async_send_goal(goal, options);
     }
+    
 
     void switch_to_velocity_controller()
     {
@@ -696,10 +858,7 @@ private:
 
         if (DEBUG_)
         {
-            RCLCPP_INFO_THROTTLE(
-                get_logger(),
-                *get_clock(),
-                2000,
+            RCLCPP_INFO(get_logger(),
                 "Linear: vx=%.6f vy=%.6f vz=%.6f | Angular wx=%.6f wy=%.6f wz=%.6f",
                 vx_, vy_, vz_, wx_, wy_, wz_);
         }
@@ -763,7 +922,7 @@ private:
         state.setJointGroupPositions(joint_model_group_, positions);
         state.update();
 
-        const auto * ee = robot_model_->getLinkModel("ee_link");
+        const auto * ee = robot_model_->getLinkModel(end_effector_name_);
         if (!ee)
         {
             return false;
@@ -785,77 +944,245 @@ private:
         return true;
     }
 
-    JointVector limit_joint_velocity(const JointVector & requested)
+    void get_tracker_twist(
+        Eigen::Vector3d & linear_velocity,
+        Eigen::Vector3d & angular_velocity)
     {
-        const auto now = std::chrono::steady_clock::now();
+        linear_velocity.setZero();
+        angular_velocity.setZero();
 
-        double dt = 0.0;
-        if (velocity_limiter_initialized_)
+        std::lock_guard<std::mutex> lock(velocity_mutex_);
+
+        const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_velocity_time_).count();
+
+        if (!received_velocity_ || age > timeout_age_)
         {
-            dt = std::chrono::duration<double>(now - previous_command_time_).count();
+            return;
         }
 
-        previous_command_time_ = now;
+        linear_velocity = Eigen::Vector3d(vx_, vy_, vz_);
+        angular_velocity = Eigen::Vector3d(wx_, wy_, wz_);
 
-        if (!velocity_limiter_initialized_)
+        for (Eigen::Index i = 0; i < 3; ++i)
         {
-            velocity_limiter_initialized_ = true;
-            previous_commanded_velocity_.setZero();
-
-            if (acceleration_limiting_)
+            if (std::abs(linear_velocity[i]) < deadzone_velocity_)
             {
-                return previous_commanded_velocity_;
+                linear_velocity[i] = 0.0;
+            }
+
+            if (std::abs(angular_velocity[i]) < deadzone_twist_)
+            {
+                angular_velocity[i] = 0.0;
             }
         }
-
-        JointVector target = requested;
-
-        if (velocity_limiting_)
-        {
-            double velocity_scale = 1.0;
-
-            for (Eigen::Index i = 0; i < 6; ++i)
-            {
-                const double requested_speed = std::abs(requested[i]);
-                if (requested_speed > max_joint_velocity_[i])
-                {
-                    velocity_scale = std::min(velocity_scale, max_joint_velocity_[i] / requested_speed);
-                }
-            }
-
-            target *= velocity_scale;
-        }
-
-        JointVector limited = target;
-
-        if (acceleration_limiting_)
-        {
-            if (!std::isfinite(dt) || dt <= 0.0)
-            {
-                return previous_commanded_velocity_;
-            }
-
-            dt = std::min(dt, CONTROL_DT_);
-
-            const JointVector change = target - previous_commanded_velocity_;
-            double acceleration_scale = 1.0;
-
-            for (Eigen::Index i = 0; i < 6; ++i)
-            {
-                const double requested_change = std::abs(change[i]);
-                if (requested_change > 0.0)
-                {
-                    acceleration_scale = std::min(acceleration_scale, max_joint_acceleration_[i] * dt / requested_change);
-                }
-            }
-
-            acceleration_scale = std::clamp(acceleration_scale, 0.0, 1.0);
-            limited = previous_commanded_velocity_ + acceleration_scale * change;
-        }
-
-        previous_commanded_velocity_ = limited;
-        return limited;
     }
+
+    bool get_ordered_joint_velocities(
+        const sensor_msgs::msg::JointState & joint_state,
+        JointVector & velocities)
+    {
+        const auto & joint_names = joint_model_group_->getActiveJointModelNames();
+
+        if (joint_names.size() != 6)
+        {
+            RCLCPP_ERROR(get_logger(),
+                "Expected 6 active joints, found %zu",
+                joint_names.size());
+            return false;
+        }
+
+        for (std::size_t i = 0; i < joint_names.size(); ++i)
+        {
+            const auto name_it = std::find(
+                joint_state.name.begin(),
+                joint_state.name.end(),
+                joint_names[i]);
+
+            if (name_it == joint_state.name.end())
+            {
+                RCLCPP_WARN(get_logger(),
+                    "Missing joint state for %s",
+                    joint_names[i].c_str());
+                return false;
+            }
+
+            const auto state_index = static_cast<std::size_t>(std::distance(joint_state.name.begin(), name_it));
+
+            if (state_index >= joint_state.velocity.size() || !std::isfinite(joint_state.velocity[state_index]))
+            {
+                RCLCPP_WARN(get_logger(),
+                    "Missing or invalid joint velocity for %s",
+                    joint_names[i].c_str());
+
+                return false;
+            }
+
+            velocities[static_cast<Eigen::Index>(i)] = joint_state.velocity[state_index];
+        }
+
+        return true;
+    }
+
+    TrackingErrors calculate_tracking_errors(
+        const Eigen::Vector3d & tracker_position,
+        const Eigen::Vector3d & robot_position,
+        const Eigen::Quaterniond & tracker_orientation,
+        const Eigen::Quaterniond & robot_orientation) const
+    {
+        TrackingErrors errors;
+
+        const Eigen::Vector3d tracker_delta = tracker_position - tracker_reference_position_;
+
+        const Eigen::Vector3d target_position = robot_reference_position_ + translation_scale_ * tracker_delta;
+
+        errors.position_error = target_position - robot_position;
+        errors.distance = errors.position_error.norm();
+
+        if (errors.distance > deadzone_translation_error_)
+        {
+            errors.error_outside = errors.position_error * ((errors.distance - deadzone_translation_error_) / errors.distance);
+        }
+
+        Eigen::Quaterniond tracker_orientation_delta = tracker_orientation * tracker_reference_orientation_.conjugate();
+        tracker_orientation_delta.normalize();
+
+        Eigen::Quaterniond target_orientation = tracker_orientation_delta * robot_reference_orientation_;
+        target_orientation.normalize();
+
+        Eigen::Quaterniond orientation_error = target_orientation * robot_orientation.conjugate();
+        orientation_error.normalize();
+
+        if (orientation_error.w() < 0.0)
+        {
+            orientation_error.coeffs() *= -1;
+        }
+
+        const double sin_half_angle = orientation_error.vec().norm();
+
+        if (sin_half_angle > 0.0)
+        {
+            const double angle = 2.0 * std::atan2(sin_half_angle, orientation_error.w());
+        
+            if (angle > deadzone_orientation_error_)
+            {
+                errors.angular_error = ((angle - deadzone_orientation_error_) / sin_half_angle) * orientation_error.vec();
+            }
+        }
+
+        return errors;
+    }
+
+    bool get_current_jacobian(
+        const std::vector<double> & joint_positions,
+        JointMatrix & jacobian)
+    {
+        robot_state_->setJointGroupPositions(
+            joint_model_group_,
+            joint_positions);
+        robot_state_->update();
+
+        const auto * end_effector = robot_model_->getLinkModel(end_effector_name_);
+
+        if (end_effector == nullptr)
+        {
+            RCLCPP_ERROR(get_logger(), 
+                "%s was not found",
+                end_effector_name_.c_str());
+
+            return false;
+        }
+
+        Eigen::MatrixXd dynamic_jacobian;
+        robot_state_->getJacobian(
+            joint_model_group_,
+            end_effector,
+            Eigen::Vector3d::Zero(),
+            dynamic_jacobian);
+
+        if (dynamic_jacobian.rows() != 6 ||
+            dynamic_jacobian.cols() != 6 ||
+            !dynamic_jacobian.allFinite())
+        {
+            RCLCPP_ERROR(get_logger(), "Jacobian is invalid or not 6x6");
+            return false;
+        }
+
+        jacobian = dynamic_jacobian;
+        return true;
+    }
+
+    bool calculate_priority_weights(
+        const double distance,
+        double & position_weight,
+        double & velocity_weight) const
+    {
+        const double transition_distance = std::max(position_prio_distance_ - deadzone_translation_error_, 0.0001);
+
+        const double gap_ratio = std::clamp((distance - deadzone_translation_error_) / transition_distance, 0.0, 1.0);
+
+        position_weight = position_priority_weight_ * (1.0 + (position_prio_max_mult_ - 1.0) * gap_ratio);
+        velocity_weight = velocity_priority_weight_;
+
+        return std::isfinite(position_weight) &&
+            std::isfinite(velocity_weight) &&
+            position_weight > 0.0 &&
+            velocity_weight > 0.0;
+    }
+
+    bool apply_directional_braking_limit(
+        const Eigen::Vector3d & position_error,
+        const double distance,
+        const JointMatrix & jacobian,
+        const Eigen::Vector3d relative_velocity,
+        const Eigen::Vector3d & feedforward_velocity,
+        const double position_weight,
+        const double total_weight,
+        JointVector & position_twist,
+        Eigen::Vector3d & combined_linear_velocity)
+    {
+        if (distance > 0.0)
+        {
+            const Eigen::Vector3d direction = position_error / distance;
+
+            double directional_brake_acceleration = 0.0;
+
+            for (Eigen::Index i = 0; i < 6; ++i)
+            {
+                const double directional_contribution = direction.dot(jacobian.block<3, 1>(0, i));
+
+                directional_brake_acceleration += std::abs(directional_contribution) * max_joint_acceleration_[static_cast<std::size_t>(i)];
+            }
+
+            if (!std::isfinite(directional_brake_acceleration) ||
+                !combined_linear_velocity.allFinite() ||
+                directional_brake_acceleration < 0.0)
+            {
+                return false;
+            }
+
+            const double closing_speed = relative_velocity.dot(direction);
+
+            const double reaction_distance = std::max(closing_speed, 0.0) * braking_delay_;
+
+            const double available_distance = std::max(distance - stopping_margin_ - reaction_distance, 0.0);
+
+            const double allowed_closing_speed = std::sqrt(2.0 * directional_brake_acceleration * available_distance);
+
+            const double commanded_closing_speed = (combined_linear_velocity - feedforward_velocity).dot(direction);
+
+            if (commanded_closing_speed > allowed_closing_speed)
+            {
+                const Eigen::Vector3d braked_linear_velocity = combined_linear_velocity - (commanded_closing_speed - allowed_closing_speed) * direction;
+
+                position_twist.head<3>() += (total_weight / position_weight) * (braked_linear_velocity - combined_linear_velocity);
+
+                combined_linear_velocity = braked_linear_velocity;
+            }
+        }
+
+        return true;
+    }
+    
 
     void control_loop()
     {
@@ -902,6 +1229,7 @@ private:
         tracker_orientation.normalize();
         robot_orientation.normalize();
 
+
         if (!feedback_reference_set_)
         {
             tracker_reference_position_ = tracker_position;
@@ -913,162 +1241,170 @@ private:
             return;
         }
 
+        Eigen::Vector3d tracker_velocity;
+        Eigen::Vector3d tracker_angular_velocity;
+        get_tracker_twist(tracker_velocity, tracker_angular_velocity);
 
-        const Eigen::Vector3d tracker_delta = tracker_position - tracker_reference_position_;
+        const TrackingErrors tracking_errors = calculate_tracking_errors(
+            tracker_position,
+            robot_position,
+            tracker_orientation,
+            robot_orientation);
 
-        const Eigen::Vector3d target_position = robot_reference_position_ + translation_scale_ * tracker_delta;
-
-        const Eigen::Vector3d position_error = target_position - robot_position;
-
-        Eigen::Vector3d error_outside = Eigen::Vector3d::Zero();
-        const double error_magnitude = position_error.norm();
-
-        if (error_magnitude > deadzone_translation_error_)
-        {
-            error_outside = position_error * ((error_magnitude - deadzone_translation_error_) / error_magnitude);
-
-
-        }
-
+        const Eigen::Vector3d & position_error = tracking_errors.position_error;
+        const Eigen::Vector3d & error_outside = tracking_errors.error_outside;
+        const Eigen::Vector3d angular_error = tracking_errors.angular_error;
+        const double distance = tracking_errors.distance;
         
-
-        const Eigen::Vector3d correction_velocity = position_gain_ * error_outside;
-
-        Eigen::Quaterniond tracker_orientation_delta = tracker_orientation * tracker_reference_orientation_.conjugate();
-        tracker_orientation_delta.normalize();
-
-        Eigen::Quaterniond target_orientation = tracker_orientation_delta * robot_reference_orientation_;
-        target_orientation.normalize();
-
-        Eigen::Quaterniond orientation_error = target_orientation * robot_orientation.conjugate();
-        orientation_error.normalize();
-
-        if (orientation_error.w() < 0.0)
-        {
-            orientation_error.coeffs() *= -1.0;
-        }
-
-        const double sin_half_angle = orientation_error.vec().norm();
-        Eigen::Vector3d angular_error = Eigen::Vector3d::Zero();
-
-        if (sin_half_angle > 0.0)
-        {
-            const double angle = 2.0 * std::atan2(sin_half_angle, orientation_error.w());
-
-            if (angle > deadzone_orientation_error_)
-            {
-                angular_error = ((angle - deadzone_orientation_error_) / sin_half_angle) * orientation_error.vec();
-            }
-        }
-
         const Eigen::Vector3d angular_correction = orientation_gain_ * angular_error;
 
-        Eigen::Vector3d tracker_velocity = Eigen::Vector3d::Zero();
-        Eigen::Vector3d tracker_angular_velocity = Eigen::Vector3d::Zero();
+        JointMatrix jacobian = JointMatrix::Zero();
 
+        if (!get_current_jacobian(current_positions, jacobian))
         {
-            std::lock_guard<std::mutex> lock(velocity_mutex_);
-
-            const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - last_velocity_time_).count();
-            
-            if (received_velocity_ && age <= timeout_age_)
-            {
-                tracker_velocity = Eigen::Vector3d(vx_, vy_, vz_);
-                tracker_angular_velocity = Eigen::Vector3d(wx_, wy_, wz_);
-
-                for (Eigen::Index j = 0; j < 3; ++j)
-                {
-                    if (std::abs(tracker_velocity[j]) < deadzone_velocity_)
-                    {
-                        tracker_velocity[j] = 0.0;
-                    }
-
-                    if (std::abs(tracker_angular_velocity[j]) < deadzone_twist_)
-                    {
-                        tracker_angular_velocity[j] = 0.0;
-                    }
-                }
-            }
+            publish_zero_velocity();
+            return;
         }
+
+        JointVector measured_joint_velocity = JointVector::Zero();
+
+        if (!get_ordered_joint_velocities(joint_state, measured_joint_velocity))
+        {
+            publish_zero_velocity();
+            return;
+        }
+
+        const Eigen::Vector3d robot_ee_velocity = jacobian.topRows<3>() * measured_joint_velocity;
 
         const Eigen::Vector3d feedforward_velocity = translation_scale_ * tracker_velocity;
 
-        const Eigen::Vector3d final_linear_velocity = feedforward_velocity + correction_velocity;
+        const Eigen::Vector3d relative_velocity = robot_ee_velocity - feedforward_velocity;
 
-        const Eigen::Vector3d final_angular_velocity = tracker_angular_velocity + angular_correction;
+        Eigen::Vector3d position_correction = position_gain_ * error_outside - velocity_damping_gain_ * relative_velocity;
 
-        JointVector desired_twist;
-        desired_twist << 
-            final_linear_velocity.x(),
-            final_linear_velocity.y(),
-            final_linear_velocity.z(),
-            final_angular_velocity.x(),
-            final_angular_velocity.y(),
-            final_angular_velocity.z();
+        double position_weight_effective = 0.0;
+        double velocity_weight_effective = 0.0;
 
-        robot_state_->setJointGroupPositions(joint_model_group_, current_positions);
-        robot_state_->update();
-
-        const auto * end_effector = robot_model_->getLinkModel("ee_link");
-        if (end_effector == nullptr)
+        if (!calculate_priority_weights(
+            distance,
+            position_weight_effective,
+            velocity_weight_effective))
         {
             publish_zero_velocity();
             return;
         }
 
-        Eigen::MatrixXd jacobian;
-        robot_state_->getJacobian(
-            joint_model_group_,
-            end_effector,
-            Eigen::Vector3d::Zero(),
-            jacobian);
+        JointVector position_twist = JointVector::Zero();
+        JointVector feedforward_twist = JointVector::Zero();
 
-        if (jacobian.rows() != 6 || jacobian.cols() != 6)
+
+        position_twist.head<3>() = position_correction;
+        feedforward_twist.head<3>() = feedforward_velocity;
+
+        position_twist.tail<3>() = angular_correction;
+        feedforward_twist.tail<3>() = tracker_angular_velocity;
+
+
+        const double total_weight = position_weight_effective + velocity_weight_effective;
+
+        if (!std::isfinite(total_weight) || total_weight <= 0.0)
         {
             publish_zero_velocity();
             return;
         }
 
-        const Eigen::Matrix<double, 6, 6> regularized =
-            jacobian * jacobian.transpose() + DLS_damping_ * DLS_damping_ * Eigen::Matrix<double, 6, 6>::Identity();
+        Eigen::Vector3d combined_linear_velocity =
+            (position_weight_effective * position_twist.head<3>() +
+            velocity_weight_effective * feedforward_twist.head<3>())
+            / total_weight;
 
-        const JointVector joint_velocity = jacobian.transpose() * regularized.ldlt().solve(desired_twist);
 
-        if (!joint_velocity.allFinite())
+        if (!apply_directional_braking_limit(
+            position_error,
+            distance,
+            jacobian,
+            relative_velocity,
+            feedforward_velocity,
+            position_weight_effective,
+            total_weight,
+            position_twist,
+            combined_linear_velocity))
         {
             publish_zero_velocity();
             return;
         }
 
-        const JointVector limited_joint_velocity = limit_joint_velocity(joint_velocity);
+        if (!feedforward_twist.allFinite() ||
+            !position_twist.allFinite())
+        {
+            publish_zero_velocity();
+            return;
+        }
 
+        const auto now = std::chrono::steady_clock::now();
+
+        double dt = CONTROL_DT_;
+
+        if (velocity_limiter_initialized_)
+        {
+            dt = std::chrono::duration<double>(now - previous_command_time_).count();
+        }
+        else
+        {
+            previous_commanded_velocity_.setZero();
+            velocity_limiter_initialized_ = true;
+        }
         
+        previous_command_time_ = now;
+
+        if (!std::isfinite(dt) || dt <= 0.0)
+        {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "Invalid or excessively long control-loop interval: %.4f s",
+                dt);
+
+            publish_zero_velocity();
+            previous_commanded_velocity_.setZero();
+            return;
+        }
+
+
+        JointVector commanded_joint_velocity = JointVector::Zero();
+
+
+        const bool qp_success = solve_constrained_ik(
+            jacobian,
+            position_twist,
+            feedforward_twist,
+            dt,
+            previous_commanded_velocity_,
+            position_weight_effective,
+            velocity_weight_effective,
+            commanded_joint_velocity);
+
+        if (!qp_success || !commanded_joint_velocity.allFinite())
+        {
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Constrained IK failed; commanding zero velocity");
+
+            publish_zero_velocity();
+
+            previous_commanded_velocity_.setZero();
+            return;
+        }
+
+        previous_commanded_velocity_ = commanded_joint_velocity;
+
+
 
         if (DEBUG_)
         {
-            const auto & joint_names = joint_model_group_->getActiveJointModelNames();
-
-            std::unordered_map<std::string, double> measured_velocity_by_name;
-            for (std::size_t i = 0; i < joint_state.name.size() && i < joint_state.velocity.size(); ++i)
-            {
-                measured_velocity_by_name[joint_state.name[i]] = joint_state.velocity[i];
-            }
-
-            std::vector<double> actual_joint_velocities;
-            actual_joint_velocities.reserve(joint_names.size());
-
-            bool have_all_actual_velocities = true;
-            for (const auto & joint_name : joint_names)
-            {
-                const auto it = measured_velocity_by_name.find(joint_name);
-                if (it == measured_velocity_by_name.end())
-                {
-                    have_all_actual_velocities = false;
-                    break;
-                }
-
-                actual_joint_velocities.push_back(it->second);
-            }
 
             std::unordered_map<std::string, double> actual_accelerations;
             {
@@ -1082,7 +1418,8 @@ private:
             "Error p[m]=[%.3f %.3f %.3f] r[rad]=[%.3f %.3f %.3f] | "
             "FF v[m/s]=[%.3f %.3f %.3f] w[rad/s]=[%.3f %.3f %.3f] | "
             "Correction v[m/s]=[%.3f %.3f %.3f] w[rad/s]=[%.3f %.3f %.3f] | "
-            "Final v[m/s]=[%.3f %.3f %.3f] w[rad/s]=[%.3f %.3f %.3f]",
+            "Final v[m/s]=[%.3f %.3f %.3f] w[rad/s]=[%.3f %.3f %.3f] "
+            "Distance=%.4f",
             tracker_position.x(), tracker_position.y(), tracker_position.z(),
             tracker_orientation.x(), tracker_orientation.y(), tracker_orientation.z(), tracker_orientation.w(),
             robot_position.x(), robot_position.y(), robot_position.z(),
@@ -1091,68 +1428,182 @@ private:
             angular_error.x(), angular_error.y(), angular_error.z(),
             feedforward_velocity.x(), feedforward_velocity.y(), feedforward_velocity.z(),
             tracker_angular_velocity.x(), tracker_angular_velocity.y(), tracker_angular_velocity.z(),
-            correction_velocity.x(), correction_velocity.y(), correction_velocity.z(),
+            position_correction.x(), position_correction.y(), position_correction.z(),
             angular_correction.x(), angular_correction.y(), angular_correction.z(),
-            final_linear_velocity.x(), final_linear_velocity.y(), final_linear_velocity.z(),
-            final_angular_velocity.x(), final_angular_velocity.y(), final_angular_velocity.z());
+            combined_linear_velocity.x(), combined_linear_velocity.y(), combined_linear_velocity.z(),
+            (tracker_angular_velocity + angular_correction).x(),
+            (tracker_angular_velocity + angular_correction).y(),
+            (tracker_angular_velocity + angular_correction).z(),
+            distance);
 
-            if (have_all_actual_velocities && static_cast<std::size_t>(joint_velocity.size()) == joint_names.size())
+            
+            
+            const auto & joint_names = joint_model_group_->getActiveJointModelNames();
+
+            std::ostringstream velocity_log;
+            velocity_log << std::fixed << std::setprecision(6);
+            for (std::size_t i = 0; i < joint_names.size(); ++i)
             {
-                std::ostringstream velocity_log;
-                velocity_log << std::fixed << std::setprecision(3);
-                for (std::size_t i = 0; i < joint_names.size(); ++i)
+                if (i > 0)
                 {
-                    if (i > 0)
-                    {
-                        velocity_log << " | ";
-                    }
-
-                    velocity_log << joint_names[i]
-                                 << " requested=" << joint_velocity[i]
-                                 << " actual=" << actual_joint_velocities[i];
-
-                    const auto acceleration = actual_accelerations.find(joint_names[i]);
-
-                    if (acceleration != actual_accelerations.end())
-                    {
-                        velocity_log << " actual_eccel=" << acceleration->second;
-                    } 
-                    else
-                    {
-                        velocity_log << " actual_eccel=n/a";
-                    }
+                    velocity_log << " | ";
                 }
 
-                const std::string velocity_log_text = velocity_log.str();
+                velocity_log << joint_names[i]
+                                << " requested=" << commanded_joint_velocity[static_cast<Eigen::Index>(i)]
+                                << " actual=" << measured_joint_velocity[static_cast<Eigen::Index>(i)];
 
-                RCLCPP_INFO(get_logger(),
-                    "Joint velocities [rad/s]: %s",
-                    velocity_log_text.c_str());
+                const auto acceleration = actual_accelerations.find(joint_names[i]);
+
+                if (acceleration != actual_accelerations.end())
+                {
+                    velocity_log << " actual_eccel=" << acceleration->second;
+                } 
+                else
+                {
+                    velocity_log << " actual_eccel=n/a";
+                }
             }
-            else
-            {
-                RCLCPP_WARN_THROTTLE(
-                    get_logger(),
-                    *get_clock(),
-                    2000,
-                    "Measured joint velocities are missing from /joint_states");
-            }
+
+            const std::string velocity_log_text = velocity_log.str();
+
+            RCLCPP_INFO(get_logger(),
+                "Joint velocities [rad/s]: %s",
+                velocity_log_text.c_str());
             
-
         }
 
-       
-
-        std_msgs::msg::Float64MultiArray command;
-        command.data.resize(joint_velocity.size());
-
-        for (Eigen::Index i=0; i < limited_joint_velocity.size(); ++i)
-            {
-                command.data[static_cast<std::size_t>(i)] = limited_joint_velocity[i];
-            }
-        
-        velocity_publisher_->publish(command);
+        publish_joint_velocity_command(commanded_joint_velocity);
     }
+
+
+    bool solve_constrained_ik(
+        const JointMatrix & jacobian,
+        const JointVector & position_twist,
+        const JointVector & feedforward_twist,
+        const double dt,
+        const JointVector & previous_command,
+        const double position_weight,
+        const double velocity_weight,
+        JointVector & solution)
+    {
+        constexpr int N = 6;
+
+        if (!ik_solver_initialized_ ||
+            !jacobian.allFinite() ||
+            !position_twist.allFinite() ||
+            !feedforward_twist.allFinite() ||
+            !previous_command.allFinite() ||
+            !std::isfinite(position_weight) ||
+            !std::isfinite(velocity_weight) ||
+            position_weight <= 0.0 ||
+            velocity_weight < 0.0 ||
+            !std::isfinite(dt))
+        {
+            return false;
+        }
+
+        const double wp = position_weight;
+        const double wv = velocity_weight;
+
+        // Damped least-squares objective:
+        // min 0.5*wp*||J*qdot - position_twist||^2
+        //   + 0.5*wv*||J*qdot - feedforward_twist||^2
+        //   + 0.5*lambda^2*||qdot||^2
+        JointMatrix hessian_dense = (wp + wv) * (jacobian.transpose() * jacobian);
+
+        hessian_dense.diagonal().array() += DLS_damping_ * DLS_damping_;
+
+        const JointVector gradient = -jacobian.transpose() * (wp * position_twist + wv * feedforward_twist);
+
+        std::vector<Eigen::Triplet<double>> triplets;
+        triplets.reserve(21);
+
+        for (int col = 0; col < N; ++col)
+        {
+            for (int row = 0; row <= col; ++row)
+            {
+                const double value = hessian_dense(row, col);
+
+                if (!std::isfinite(value))
+                {
+                    return false;
+                }
+
+                triplets.emplace_back(row, col, value);
+            }
+        }
+
+        Eigen::SparseMatrix<double> hessian_upper(N, N);
+        hessian_upper.setFromTriplets(
+            triplets.begin(),
+            triplets.end());
+
+        hessian_upper.makeCompressed();
+
+        JointVector lower(N);
+        JointVector upper(N);
+
+        for (int i = 0; i < N; ++i)
+        {
+            const std::size_t index = static_cast<std::size_t>(i);
+
+            //joint velocity constraints
+            double lower_i = velocity_limiting_ ? -max_joint_velocity_[index] : -std::numeric_limits<double>::infinity();
+
+            double upper_i = velocity_limiting_ ? max_joint_velocity_[index] : std::numeric_limits<double>::infinity();
+
+            if (acceleration_limiting_)
+            {
+                const double max_delta = max_joint_acceleration_[index] * dt;
+
+                lower_i = std::max(lower_i, previous_command[i] - max_delta);
+
+                upper_i = std::min(upper_i, previous_command[i] + max_delta);
+            }
+
+            if (lower_i > upper_i)
+            {
+                return false;
+            }
+
+            lower[i] = lower_i;
+            upper[i] = upper_i;
+        }
+
+        //Update QP data without reinitializing solver.
+        if (!ik_solver_.updateHessianMatrix(hessian_upper))
+        {
+            RCLCPP_ERROR(get_logger(), "OSQP updateHessianMatrix failed");
+            return false;
+        }
+        if (!ik_solver_.updateGradient(gradient))
+        {
+            RCLCPP_ERROR(get_logger(), "OSQP updateGradient failed");
+            return false;
+        }
+        if (!ik_solver_.updateBounds(lower, upper))
+        {
+            RCLCPP_ERROR(get_logger(), "OSQP updateBounds failed");
+            return false;
+        }
+
+        if (ik_solver_.solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
+        {
+            return false;
+        }
+
+        const Eigen::VectorXd result = ik_solver_.getSolution();
+
+        if (result.size() != N || !result.allFinite())
+        {
+            return false;
+        }
+
+        solution = result;
+        return true;
+    }
+
 
     void publish_zero_velocity()
     {
@@ -1161,12 +1612,22 @@ private:
         previous_command_time_ = std::chrono::steady_clock::now();
         velocity_limiter_initialized_ = true;
 
-        std_msgs::msg::Float64MultiArray command;
-        command.data.assign(6, 0.0);
-        velocity_publisher_->publish(command);
-
+        publish_joint_velocity_command(JointVector::Zero());
     }
 
+
+    void publish_joint_velocity_command(const JointVector & velocities)
+    {
+        std_msgs::msg::Float64MultiArray command;
+        command.data.resize(static_cast<std::size_t>(velocities.size()));
+
+        for (Eigen::Index i = 0; i < velocities.size(); ++i)
+        {
+            command.data[static_cast<std::size_t>(i)] = velocities[i];
+        }
+
+        velocity_publisher_->publish(command);
+    }
 };
 
 int main(int argc, char * argv[])
@@ -1177,12 +1638,7 @@ int main(int argc, char * argv[])
 
     rclcpp::NodeOptions node_options;
 
-    //node_options.automatically_declare_parameters_from_overrides(true);
-    //node_options.append_parameter_override("use_sim_time", true);
-
     auto node = std::make_shared<DlsReducedController>(node_options);
-
-    
 
     rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),2);
     executor.add_node(node);
@@ -1194,9 +1650,6 @@ int main(int argc, char * argv[])
     std::cerr << "========== INITIALIZE_SYSTEM FINISHED ==========" << std::endl;
 
     executor.spin();
-
-    // executor.cancel();
-    // executor_thread.join();
 
     node->stop_motion();
 

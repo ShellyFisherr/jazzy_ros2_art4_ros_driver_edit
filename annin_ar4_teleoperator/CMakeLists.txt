@@ -25,6 +25,7 @@ find_package(Threads REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(controller_manager_msgs REQUIRED)
+find_package(OsqpEigen REQUIRED)
 
 set(dependencies
   rclcpp
@@ -44,6 +45,7 @@ set(dependencies
   control_msgs
   rclcpp_action
   controller_manager_msgs
+  OsqpEigen
   )
 
 add_library(workspace_sampling_lib src/workspace_sampling.cpp)
@@ -67,6 +69,7 @@ target_compile_features(translation_scaling PRIVATE cxx_std_17)
 
 add_executable(dls_teleoperation_controller src/DLS_teleoperation_controller.cpp)
 ament_target_dependencies(dls_teleoperation_controller ${dependencies})
+target_link_libraries(dls_teleoperation_controller OsqpEigen::OsqpEigen)
 
 add_executable(frame_translator src/frame_translator.cpp)
 ament_target_dependencies(frame_translator ${dependencies})

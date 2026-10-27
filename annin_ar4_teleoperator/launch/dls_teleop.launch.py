@@ -98,7 +98,7 @@ def generate_launch_description():
                                 "deadzone_twist": float(node_settings["deadzone_twist"]),
                                 "timeout_age": float(node_settings["timeout_age"]),
                                 "deadzone_translation_error": float(node_settings["deadzone_translation_error"]),
-                                "deadzone_orientaiton_error": float(node_settings["deadzone_orientation_error"]),
+                                "deadzone_orientation_error": float(node_settings["deadzone_orientation_error"]),
                                 "position_gain": float(node_settings["position_gain"]),
                                 "orientation_gain": float(node_settings["orientation_gain"]),
                                 "DLS_damping": float(node_settings["DLS_damping"]),
@@ -106,6 +106,14 @@ def generate_launch_description():
                                 "acceleration_limit": node_settings["use_acceleration_limit"],
                                 "max_velocity": [float(value) for value in node_settings["max_velocity"]],
                                 "max_acceleration": [float(value) for value in node_settings["max_acceleration"]],
+                                "braking_delay": float(node_settings["braking_delay"]),
+                                "stopping_margin": float(node_settings["stopping_margin"]),
+                                "brake_damping_gain": float(node_settings["brake_damping_gain"]),
+                                "velocity_weight": float(node_settings["velocity_weight"]),
+                                "position_weight": float(node_settings["position_weight"]),
+                                "position_priority_distance" : float(node_settings["position_priority_distance"]),
+                                "position_priority_max_multiplier": float(node_settings["position_priority_max_multiplier"]),
+                                "end_effector_name": node_settings["end_effector_name"],
     }
 
     frame_translation = load_yaml("annin_ar4_teleoperator",

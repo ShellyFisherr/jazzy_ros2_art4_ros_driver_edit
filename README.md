@@ -24,8 +24,8 @@ The original Github Repository can be found [here](https://github.com/Annin-Robo
 - [Overview](#overview)
 - [Hardware Components](#hardware-components)
 - [Installation](#installation)
-  - [Windows 11 with WSL](#windows-11-with-wsl)
-  - [Linux (Recommended)](#Linux)
+  - [Windows 11 tracker setup](#windows-11-tracker)
+  - [Full Linux standalone (Recommended)](#linux-standalone)
 - [Usage](#usage)
 - [Parameters](#parameters)
 
@@ -69,141 +69,21 @@ The original Github Repository can be found [here](https://github.com/Annin-Robo
 This repository is developed and tested against `ROS 2 Jazzy` on `Ubuntu 24.04`. The installation process consists of several layers, and two different verions. Note that some parts may overlap with the download of the original github documentation from [Annin Robotics](https://anninrobotics.com)
 
 ---
-### **Windows 11 with WSL**
+### **Windows 11 tracker**
 Note that this version is only tested with the Gazebo digital Twin of the robot. This means that the guide for installing the Arduino and Teensy Firmware may be incorrect, as it is copied from the Annin Robotics Github page. The Linux version is recommended.
 
 The process is as follows:
 
-1. [Install WSL Ubuntu 24.04](#1-install-wsl-ubuntu-2404)
-2. [Install ROS 2 Jazzy (Base system)](#2-install-ros-2-jazzy-base-system)
-3. [Create and build a ROS 2 workspace](#3-create-and-build-a-ros-2-workspace)
-4. [Install Steam and SteamVR](#4-install-steam-and-steamvr)
-5. [Install the OpenVR SDK](#5-install-the-openvr-sdk)
-6. [Install the UDP Windows module (to be added later)](#6-install-the-udp-windows-module)
-7. [Install ROS control and MoveIt](#7-install-ros-controll-and-moveit)
-8. [Clone and build the AR4 ROS driver](#8-clone-and-build-the-ar4-ros-driver)
-9. [Configure serial permissions](#9-configure-serial-permissions)
-10. [Install Arduino + Teensy toolchain](#10-install-arduino--teensy-toolchain)
-11. [Flash firmware to Teensy and Arduino Nano](#11-flash-firmware-to-teensy-and-arduino-nano)
-12. [Configure UDP bridge](#12-configure-udp-bridge)
+1. [Install Steam and SteamVR](#1-install-steam-and-steamvr)
+2. [Install the OpenVR SDK](#2-install-the-openvr-sdk)
+3. [Install the UDP Windows module (to be added later)](#3-install-the-udp-windows-module)
+4. [Configure UDP bridge](#4-configure-udp-bridge)
 
 The sections below walk through these steps in a clean end-to-end order.
 
 ---
 
-### **1. Install WSL Ubuntu 24.04**
-Open Powershell as Administrator. Press the Windows key, type `PowerShell`, right-click it and choose **Run as Administrator**
-
-Enable WSL by running the following command in the terminal to enable wsl and install the required windows features:
-```
-wsl --install
-```
-Restart your computer now if prompted to complete the base WSL activation.
-
-Install Ubuntu 24.04 (Noble) by opening the PowerShell as Administrator and run the following command to install the specific 24.04 version:
-```
-wsl --install -d Ubuntu-24.04
-```
-Set up your account once the download finished by following the instructions that appear on the terminal.
-
-Go back to the powershell window and confirm that the correct version is installed by using the command:
-```
-wsl -l -v
-```
-It should say something along the lines of:
-```
-NAME            STATE           VERSION
-Ubuntu-24.04    Running         2
-```
----
-### **2. Install ROS 2 Jazzy (Base System)**
-The same tutorial as below can be found on the [official site](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html) for ROS 2 Jazzy. The tutorial is also mentioned below. You should follow it until the **Environment Setup** step is completed. The official site will also have demos to try, they are not included in the tutorial below.
-
-#### **System setup**
-Make sure you have a locale which supports `UTF-8`. If you are in a minimal enviroment (such as a docker container), the locale may be something minimal like `POSIX`. We test the following settings. However, it should be fine if you're using a different `UTF-8` supported locale.
-```
-locale # check for UTF-8
-
-sudo apt update && sudo apt install locales
-sudo locale-gen en_US en_US.UTF-8
-sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
-export LANG=en_US.UTF-8
-
-locale # verify settings
-```
-#### **Enable required repositories**
-You will need to add the ROS 2 apt repository to your system.
-
-First ensure that the Ubuntu Universe repository is enabled.
-```
-sudo apt install software-properties-common
-sudo add-apt-repository universe
-```
-The [ros-apt-source](https://github.com/ros-infrastructure/ros-apt-source/) packages provide keys and apt source configuration for the various ROS repositories.
-
-Installing the ros2-apt-source packages will configure ROS 2 repositories for your system. Updates to repository configuration will occur automatically when new versions of this package are released to the ROS repositories.
-```
-sudo apt update && sudo apt install curl -y
-export ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F'"' '{print $4}')
-curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME}})_all.deb"
-sudo dpkg -i /tmp/ros2-apt-source.deb
-```
-#### **Install ROS 2**
-Update Your apt repository caches after setting up the repositories
-```
-sudo apt update
-```
-ROS 2 packages are built on frequently updates Ubuntu systems. It is alwas recommended that you ensure your system is up to date before installing new packages.
-```
-sudo apt upgrade
-```
-Desktop Install: ROS, Rviz, demos, tutorials
-```
-sudo apt install ros-jazzy-desktop
-```
-#### **Setup Environment**
-Set up your environment
-```
-source /opt/ros/jazzy/setup.bash
-```
----
-### **3 Create and build a ROS 2 workspace**
-Create and move into a new workspace using
-```
-mkdir -p ~/ros2_ws/src
-cd ~/ros2_ws/src
-```
-This creates a standard ROS 2 workspace layout:
-```
-ros2_ws/
-  ├── src/
-  ├── build/
-  ├── install/
-  └── log/
-```
-build the basic workspace and source it using:
-```
-  source /opt/ros/jazzy/setup.bash
-  cd ~/ros2_ws
-  colcon build
-  source ~/ros2_ws/install/setup.bash
-```
-Since you need to do this every time after building, it is adviced to setup the following:
-
-First, put the source files into the `/.bashrc`. This way, any time a new terminal is opened, the workspace is automatically sourced. To do this, use the command:
-```
-echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
-echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
-```
-
-Next thing to do is to setup a command alias to build the workspaces to prevent accidentaly building workspaces in the work folder. This can be done and saved by putting the alias into the `.bashrc` file using:
-```
-echo "alias build='cd ~/ros2_ws && colcon build && source ~/.bashrc'"
-```
-now by using the command `build`, you move to the main `ros2_ws` workspace folder, build all your modules and source the needed files.
-
----
-### **4. Install Steam and SteamVR**
+### **1. Install Steam and SteamVR**
 Install Steam by downloading the launcher from their [official site](https://store.steampowered.com/about/).
 
 When you open the launcher, you can find and download `SteamVR` by going to their storepage and searching for it in the searchbar in the top-right.
@@ -213,138 +93,26 @@ Alternatively, you can download it of their [digital page](https://store.steampo
 To set up your system, simply follow the steps given by the program until the full system is configured.
 
 ---
-### **5. Install the OpenVR SDK**
+### **2. Install the OpenVR SDK**
 
 The official OpenVR SDK can be found on the [github page](https://github.com/valvesoftware/openvr). Dowload the latest version by clicking on the latest version underneath `Releases` on the right side of the page. This package uses [OpenVR SDK 2.15.6](https://github.com/ValveSoftware/openvr/releases/tag/v2.15.6), but later versions should also be compatible.
 
 Download the `Source code (zip)` file and move it to a prefered location and unzip it there. It is not adviced to keep it in the `Downloads` folder on your computer, but to move it somewhere else. For example, a separate `openvr` folder somewhere on your preferred drive.
 
 ---
-### **6. Install the UDP windows module**
+### **3. Install the UDP windows module**
 Will be added later on a separate github page. sorry for the inconvenience as of now.
 
 ---
-### **7. Install ROS controll and MoveIt**
-Now back to the `Ubuntu 24.04` terminal. The AR4 driver is built on `ros2_control`, which provides the hardware interface layer between `MoveIt` and the robot. It can be installed using the following command:
-```
-sudo apt update
-sudo apt install -y \
-  ros-jazzy-ros2-control \
-  ros-jazzy-ros2-controllers \
-  ros-jazzy-controller-manager
-```
 
-Likewise, MoveIt can be installed using:
-```
-sudo apt update
-sudo apt full-upgrade -y
-sudo apt install -y ros-jazzy-moveit ros-jazzy-moveit-py
-sudo ldconfig
-```
-`MoveIt` is used as a control system for robotic motion planning. It can both read the current robot state and joint states, as well as use inverse kinematics to process path planning for the robot.
 
-### **8. Clone and build the AR4 ros driver**
-The repository can be copied to your system using:
-```
-cd ~/ros2_ws/src
-git clone https://github.com/ShellyFisherr/jazzy_ros2_art4_ros_driver_edit ar4_ros_driver
-```
-Your workspace should now look like:
-```
-~/ros2_ws/src/ar4_ros_driver
-```
-To use the package, multiple separate ROS dependencies have to be installed. This needs to be done once per system, or when a new version of this repository is installed to make sure all dependencies are installed. First of all, download `rosdep`.
-```
-sudo apt update
-sudo apt install python3-rosdep
-```
-Then initialize it:
-```
-sudo rosdep init
-rosdep update
-```
-from here, to install all dependencies, simply use:
-```
-cd ~/ros2_ws
-rosdep install --from-paths src --ignore-src -r -y
-```
-Now, with all dependencies installed and the alias set up previously, the system can be build using the command
-```
-build
-```
-Which builds the workspace in the correct location and sources it.
-
-If everything went correctly, the system can be verified by launching the `MoveIt` demo. This should be done before connecting real hardware to verify that ROS + MoveIt are working correctly:
-```
-ros2 launch annin_ar4_moveit_config demo.launch.py ar_model:=mk5
-```
-This should open RViz with the AR4 model and interactive planning tools.
-
----
-### **9. Configure serial permissions**
-Now to setup the link between software and hardware. First, enable the serial port access required for communicating with the Teensy and Arduino Nano:
-```
-sudo adduser $USER dialout
-```
-then log out and back in or reboot your system for the changes to take effect.
-
----
-### **10. Install Arduino + Teensy toolchain**
-
-Arduino IDE can be downloaded from their [official page](https://docs.arduino.cc/software/ide-v2/tutorials/getting-started/ide-v2-downloading-and-installing/) by following the instructions.
-
-Teensyduino can be installed by following PJRC's [official instructions](https://www.pjrc.com/teensy/td_download.html).
-
-In Arduino IDE:
-
-1. Open **Preferences**
-2. Add the following URL to **Additional Boards Managers URLs**:
-```
-https://www.pjrc.com/teensy/package_teensy_index.json
-```
-3. Open **Tools** $\rightarrow$ **Board** $\rightarrow$ **Boards Manager**
-4. Search for and install **Teensy**
-5. Select **Teensy 4.1** as the active board
-
-To install the required Arduino Libraries, from **Tools** $\rightarrow$ **Manage Libraries**, install:
-- Bounce2
-
----
-### **11. Flash firmware to Teensy and Arduino Nano**
-The firmware is located in:
-```
-annin_ar4_firmware/
-```
-**Teensy 4.1**
-- Open the Teensy firmware sketch in Arduino IDE
-- Select **Board: Teensy 4.1**
-- Select the correct USB port
-- Click **Upload**
-
-**Arduino Nano (Gripper)**
-- Open the gripper firmware sketch
-- Select **Board: Arduino Nano**
-- Select **Processor: ATmega328P (Old Bootloader)** if required
-- Click **Upload**
-
-After flashing the firmware or power cycling the robot:
-- A **Calibration Run is required**
-- his is normal and expected behavior
-
-Calibration is triggered automatically when launching the driver with
-```
-calibrate :=True
-```
-
-**NOTE: TELEOP IS NOT YET STABLE AS OF THIS VERSION!!!**
-
----
-### **12. configure udp bridge**
+### **4. configure udp bridge**
 To be added at a later date
 
-At this point, the system can be run on the real hardware.
+ From here the windows side is done. Continue with the Linux setup below now, make sure to configure the UDP bridge on that side as well.
+
 ---
-### **Linux**
+### **Linux Standalone**
 Note that this is the preferred version as the original system is also build completely in ubuntu.
 
 The required software before continuing is that your linux distro is `Ubuntu 24.04`
@@ -354,13 +122,12 @@ The process is as follows:
 2. [Create and build a ROS 2 workspace](#2-create-and-build-a-ros-2-workspace)
 3. [Install Steam and SteamVR](#3-install-steam-and-steamvr)
 4. [Install the OpenVR SDK](#4-install-the-openvr-sdk)
-5. [Install the UDP LINUX module (to be added later)](#5-install-the-linux-udp-module)
-6. [Install ROS control and MoveIt](#6-install-ros-controll-and-moveit)
-7. [Clone and build the AR4 ROS driver](#7-clone-and-build-the-ar4-ros-driver)
-8. [Configure serial permissions](#8-configure-serial-permissions)
-9. [Install Arduino + Teensy toolchain](#9-install-arduino-and-teensy-toolchain)
-10. [Flash firmware to Teensy and Arduino Nano](#10-flash-firmware-to-teensy-and-arduino)
-11. [Configure UDP bridge](#11-configure-udp-bridge)
+5. [Install ROS control and MoveIt](#5-install-ros-controll-and-moveit)
+6. [Clone and build the AR4 ROS driver](#6-clone-and-build-the-ar4-ros-driver)
+7. [Configure serial permissions](#7-configure-serial-permissions)
+8. [Install Arduino + Teensy toolchain](#8-install-arduino-and-teensy-toolchain)
+9. [Flash firmware to Teensy and Arduino Nano](#9-flash-firmware-to-teensy-and-arduino)
+10. [Configure UDP bridge](#10-configure-udp-bridge)
 
 The section below goes through the steps in a clean end-to-end order
 
@@ -452,6 +219,8 @@ now by using the command `build`, you move to the main `ros2_ws` workspace folde
 
 ---
 ### **3. Install Steam and steamVR**
+This part can be skipped if you use the [Windows Setup](#windows-11-tracker).
+
 First, make sure the entire system is up to date by running the following commands:
 ```
 sudo apt update
@@ -486,16 +255,20 @@ To set up your system when launching steamVR, simply follow the steps given by t
 
 ---
 ### **4. Install the openVR SDK**
-The official OpenVR SDK can be found on the [github page](https://github.com/valvesoftware/openvr). Dowload the latest version by clicking on the latest version underneath `Releases` on the right side of the page. This package uses [OpenVR SDK 2.15.6](https://github.com/ValveSoftware/openvr/releases/tag/v2.15.6), but later versions should also be compatible.
+This part can be skipped if you use the [Windows Setup](#windows-11-tracker).
 
-Download the `Source code (zip)` file and move it to a prefered location and unzip it there. It is not adviced to keep it in the `Downloads` folder on your computer, but to move it somewhere else. For example, a separate `openvr` folder somewhere on your preferred drive.
+The official OpenVR SDK can be found on the [github page](https://github.com/valvesoftware/openvr). It can be easily installed by copying the github page using
+```
+git clone https://github.com/ValveSoftware/openvr.git ~/openvr
+```
+From there you can check if the folder can be found using
+```
+ls ~/openvr/headers/openvr.h ~/openvr/lib/linux64/libopenvr_api.so
+```
+If you want to have the install in a different location, that is possible, but make sure to change the folder location in the source code later as well.
 
 ---
-### **5. Install the LINUX UDP module**
-Will be added later as bridge type will most likely be switched.
-
----
-### **6. Install ROS controll and MoveIt**
+### **5. Install ROS controll and MoveIt**
 Now back to the terminal. The AR4 driver is built on `ros2_control`, which provides the hardware interface layer between `MoveIt` and the robot. It can be installed using the following command:
 ```
 sudo apt update
@@ -515,7 +288,7 @@ sudo ldconfig
 `MoveIt` is used as a control system for robotic motion planning. It can both read the current robot state and joint states, as well as use inverse kinematics to process path planning for the robot.
 
 ---
-### **7. Clone and build the AR4 ROS driver**
+### **6. Clone and build the AR4 ROS driver**
 The repository can be copied to your system using:
 ```
 cd ~/ros2_ws/src
@@ -525,7 +298,61 @@ Your workspace should now look like:
 ```
 ~/ros2_ws/src/ar4_ros_driver
 ```
-To use the package, multiple separate ROS dependencies have to be installed. This needs to be done once per system, or when a new version of this repository is installed to make sure all dependencies are installed. First of all, download `rosdep`.
+To use the package, multiple separate ROS dependencies have to be installed. This needs to be done once per system, or when a new version of this repository is installed to make sure all dependencies are installed.
+There is one addon that has to be installed manually, which is the `OSQP solver`. The other packages should install automatically using the instructions given afterwards.
+
+To install the `OSQP solver` addon, start with installing the dependencies of it using:
+```
+cd ~
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    cmake \
+    git \
+    libeigen3-dev \
+    ros-jazzy-osqp-vendor
+```
+From there, source the ROS 2 environment again:
+```
+source /opt/ros/jazzy/setup.bash
+```
+Then, clone the `OsqpEigen` repository from github:
+```
+cd ~
+git clone https://github.com/robotology/osqp-eigen.git
+cd osqp-eigen
+git checkout v0.8.0
+```
+Build and install the package:
+```
+cd ~/osqp-eigen
+git checkout v0.8.0
+
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -Dosqp_DIR=/opt/ros/jazzy/lib/cmake/osqp
+
+cmake --build build --parallel
+sudo cmake --install build
+sudo ldconfig
+```
+Then verify if it is installed successfully using:
+```
+grep 'OSQP_VERSION ' /opt/ros/jazzy/include/osqp/constants.h
+```
+Check that `OsqpEigen` links against the ROS-provided OSQP library:
+```
+ldd /usr/local/lib/libOsqpEigen.so.0.8.0 | grep osqp
+```
+The expected output is
+```
+libosqp.so => /opt/ros/jazzy/lib/libosqp.so
+```
+
+
+To install the rest of the packages, do  the following:
+First of all, download `rosdep`.
 ```
 sudo apt update
 sudo apt install python3-rosdep
@@ -540,6 +367,8 @@ from here, to install all dependencies, simply use:
 cd ~/ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
+It may give a warning that it cannot locate the `OsqpEigen` addon, but that is installed separately already for that reason, so there is no need to worry about it.
+
 Now, with all dependencies installed and the alias set up previously, the system can be build using the command
 ```
 build
@@ -554,7 +383,7 @@ This should open RViz with the AR4 model and interactive planning tools.
 
 
 ---
-### **8. Configure serial permissions**
+### **7. Configure serial permissions**
 Now to setup the link between software and hardware. First, enable the serial port access required for communicating with the Teensy and Arduino Nano:
 ```
 sudo adduser $USER dialout
@@ -562,7 +391,7 @@ sudo adduser $USER dialout
 then log out and back in or reboot your system for the changes to take effect.
 
 ---
-### **9. Install Arduino and teensy toolchain**
+### **8. Install Arduino and teensy toolchain**
 
 First, it is required to istall FUSE, which is needed for AppImage to use on the applications menu.
 
@@ -654,7 +483,7 @@ sudo udevadm trigger
 ```
 
 ---
-### **10. Flash firmware to Teensy and Arduino**
+### **9. Flash firmware to Teensy and Arduino**
 
 The firmware is located in
 ```
@@ -682,9 +511,12 @@ calibrate:=True
 ```
 
 ---
-### **11. Configure UDP bridge**
-Will be added later since bridge type will most likely be changed
-
+### **10. Configure UDP bridge**
+This part is only needed if you use the [Windows 11 tracker module](#windows-11-tracker) to track the steamVR tracker. To configure it, open `PortSettings.yaml` located in
+```
+~/ros2_ws/src/ar4_ros_driver/tracker_udp_bridge/config/
+```
+change the `port` parameter to match the same port number as the Windows module is using.
 
 At this point, the system can be run on the real hardware.
 
@@ -857,4 +689,26 @@ Parameters for the `annin_ar4_teleoperator` package will be divided between the 
   - `REQUIREMENTS:` Must be in a reachable space within the `ROS 2` workspace.
   - `USAGE:` Place where the output file is stored.
 
-
+<!-- $$
+c=(\mathbf v_{\text{robot}}-\mathbf v_{\text{target}})\cdot\mathbf n
+$$
+$$
+[
+v_f^2=v_i^2+2as
+]
+$$
+$$
+[
+d_{\text{stop}}=\frac{c^2}{2a_b}
+]
+$$
+$$
+[
+c_{\text{allowed}}=\sqrt{2a_b d_{\text{available}}}
+]
+$$ -->
+$$
+[
+a_{\text{estimate}}=\sum_i |\mathbf n^\mathsf{T}J_i|A_i
+]
+$$
