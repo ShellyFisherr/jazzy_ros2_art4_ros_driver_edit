@@ -394,7 +394,6 @@ private:
 
     if (!have_data)
     {
-      print_diagnostics();
       return;
     }
 
@@ -404,8 +403,6 @@ private:
     if (data_age > max_data_age_)
     {
       publish_zero_velocity();
-
-      print_diagnostics();
 
       return;
     }
@@ -453,11 +450,6 @@ private:
 
     last_sequence_published_ = data.sequence;
 
-    // RCLCPP_INFO(get_logger(),
-    //   "Publishing seq=%lu | vx = %.4f | vy = %.4f | vz = %.4f ",
-    //   data.sequence, data.vx, data.vy, data.vz);
-
-    print_diagnostics();
   }
 
   void publish_zero_velocity()
@@ -476,36 +468,6 @@ private:
     zero_msg.twist.angular.z = 0.0;
 
     velocity_publisher_->publish(zero_msg);
-  }
-
-
-  void print_diagnostics()
-  {
-    const auto now = std::chrono::steady_clock::now();
-
-    const double elapsed = std::chrono::duration<double>(now - last_diagnostic_time_).count();
-
-    if (elapsed < min_diagnostic_interval_)
-    {
-      return;
-    }
-
-    last_diagnostic_time_ = now;
-
-    RCLCPP_INFO(get_logger(),
-      "RX: %6lu | "
-      "PUB: %6lu | "
-      "TIMER: %6lu | "
-      "SEQ_JUMPS: %4lu | "
-      "LATEST_SEQ: %lu | "
-      "MAX_PUB_DT: %.4f ms",
-      
-      received_packets_.load(),
-      published_packets_.load(),
-      timer_calls_.load(),
-      sequence_jumps_.load(),
-      last_sequence_,
-      max_publish_interval_ * 1000.0);
   }
 
   void shutdown()

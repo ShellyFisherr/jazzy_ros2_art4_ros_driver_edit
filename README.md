@@ -349,7 +349,14 @@ The expected output is
 ```
 libosqp.so => /opt/ros/jazzy/lib/libosqp.so
 ```
-
+Finally, you have to make it so when building, the program knows where to find he `openvr` folder:
+```
+echo 'export OPENVR_SDK_ROOT="~/openvr"' >> ~/.bashrc
+```
+If you have the folder saved in a different location, change the `~/openvr` part to point to the location of the folder. Afterwards, don't forget to source the `/.bashrc` again before continuing:
+```
+source ~/.bashrc
+```
 
 To install the rest of the packages, do  the following:
 First of all, download `rosdep`.
@@ -518,16 +525,53 @@ This part is only needed if you use the [Windows 11 tracker module](#windows-11-
 ```
 change the `port` parameter to match the same port number as the Windows module is using.
 
+if you want, you can test if the UDP bridge is working by doing the following:
+
+1. launch the Bridge receiver using
+```
+ros2 launch tracker_udp_bridge tracker_udp_bridge.launch.py
+```
+Then, in a seperate terminal window use:
+```
+ros2 topic echo /tracker/velocity
+```
+
+Afterwards, in the windows system that has your `SteamVR` and the `UDP windows module`, launch steamVR and enable the tracker. If it is recognized, the tracker symbol will turn green in the application. Lastly, run `trackerdata.exe` located in `tracker_reader\build\Release`.
+
+A window will open that starts spitting out numbers, which correspond to the position, orientation and velocities of the tracker.
+
+Now, with the bridge both sending and recieving data, the window that is running the `topic echo` command should start outputing data, meaning everything is configured correctly.
+
+If it does not do this, then re-check the IP and port configuration in both the C++ file on windows and in the PortSettings.yaml file and make sure the IP is set to the correct adress and the ports match on both sides.
+
 At this point, the system can be run on the real hardware.
 
 ---
 ## **Usage**
 
-Run the movement-frame calibration from a terminal with the tracker pose publisher running:
+### **General**
+
+Once the entire installation is done, the program can be run using
 ```
-ros2 launch annin_ar4_teleoperator movement_calibration.launch.py
+ros2 launch annin_ar4_teleoperator teleoperation.launch.py
 ```
-Follow the prompts in the terminal and press ENTER to record each start and end position. The node reads ENTER from the controlling terminal, so launch it from an interactive terminal rather than a background process.
+
+
+This file has the following parameters configurable from the commandline:
+| **Name**        | **Options**    | **Usage**                                               | **Default** |
+|-----------------|----------------|---------------------------------------------------------|-------------|
+| simulation:=    | true, false    | Use the simulated version of the robot                  | true        |
+| calibration:=   | true, false    | Run the calibration for the teleoperation parameters    | true        |
+| calibrate_arm:= | true, false    | Run the calibration cycle for the physical arm          | true        |
+| tracker:=       | linux, windows | Use the linux or windows version of the tracker program | linux       |
+
+When running the system for the first time, it needs to be calibrated. It is adviced to do the calibration using the simulated version of the robot to verify if the robot behaves as intended.
+
+to do this, use
+```
+ros2 launch annin_ar4_teleoperator teleoperation.launch.py simulation:=true calibration:=true
+```
+and then the correct version of the tracker based on which version you are using.
 
 
 ## **Parameters**
@@ -622,6 +666,56 @@ Parameters for the `annin_ar4_teleoperator` package will be divided between the 
   - `TYPE:` `array double`
   - `REQUREMENTS:` Must be positive and finite and contain 6 values.
   - `USAGE:` The max acceleration each joint can generate.
+
+- braking_delay: 
+  - `DEFAULT:` `0.01` [s]
+  - `TYPE:` `double`
+  - `REQUREMENTS:` Must be positive and finite.
+  - `USAGE:` Used as an estimation of how long it takes before the system motors receive the braking command.
+
+- stopping_margin: 
+  - `DEFAULT:` `0.005` [m]
+  - `TYPE:` `double`
+  - `REQUREMENTS:` Must be positive and finite.
+  - `USAGE:` A small buffer to prevent the system from using the entire remaining distance to stop, but rather try and make sure that the system can stop already with a small margin of movement left.
+
+- brake_damping_gain: 
+  - `DEFAULT:` `0.75`
+  - `TYPE:` `double`
+  - `REQUREMENTS:` Must be positive and finite.
+  - `USAGE:` Scaling parameter used for breaking.
+
+- velocity_weight: 
+  - `DEFAULT:` `1.0`
+  - `TYPE:` `double`
+  - `REQUREMENTS:` Must be positive and finite
+  - `USAGE:` How heavily the velocity error should be prioritized over position error. Creates a ratio combined with position_weight.
+
+- position_weight: 
+  - `DEFAULT:` `1.0`
+  - `TYPE:` `double`
+  - `REQUREMENTS:` Must be positive and finite
+  - `USAGE:` How heavily the position error should be prioritized over the velocity error. Creates a ratio combined with velocity_weight.
+
+- position_priority_distance: 
+  - `DEFAULT:` `0.01` [m]
+  - `TYPE:` `double`
+  - `REQUREMENTS:` must be positive and finite.
+  - `USAGE:` At what distance the position error correction multiplier reaches the maximum set multiplier from position_priority_max_multiplier.
+
+- position_priority_max_multiplier: 
+  - `DEFAULT:` `10.0`
+  - `TYPE:` `double`
+  - `REQUREMENTS:` must be greater or equal to 1.0 and finite. (at 1.0 the position priority stays the same over any distance)
+  - `USAGE:` The maximum multiplied with position_weight when the error exceeds teh position_priority_distance. example: if the multiplier is 10 and the position_weight is 2, then the maximum weight can become 2*10 = 20.
+
+- end_effector_name: 
+  - `DEFAULT:` `"ee_link"`
+  - `TYPE:` `string`
+  - `REQUREMENTS:` must be exactly the same as the linkname of the final link in the robotic chain
+  - `USAGE:` What link is used for the final position in the system kinematics.
+
+
 
 ### **translation_scaling.yaml**
 ---

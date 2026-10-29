@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -140,7 +141,9 @@ public:
                 have_joint_state = received_joint_state_;
             }
 
-            if (!have_joint_state || !trajectory_client_->action_server_is_ready())
+            if (!have_joint_state || 
+                !trajectory_client_->action_server_is_ready() ||
+                !controller_switch_client_->service_is_ready())
             {
                 return;
             }
@@ -282,6 +285,8 @@ private:
     double CONTROL_DT_;
     double position_priority_weight_;
     double velocity_priority_weight_;
+
+    std::atomic<bool> teleoperation_ready_{false};
 
     JointVector previous_commanded_velocity_ = JointVector::Zero();
     
@@ -488,9 +493,9 @@ private:
 
         position_prio_max_mult_ = declare_parameter<double>("position_priority_max_multiplier", 10.0);
 
-        if (!std::isfinite(position_prio_max_mult_) || position_prio_max_mult_ <= 0.0)
+        if (!std::isfinite(position_prio_max_mult_) || position_prio_max_mult_ < 1.0)
         {
-            throw std::runtime_error("position priority max multiplier must be positive and finite");
+            throw std::runtime_error("position priority max multiplier must be positive and greater or equal to one");
         }
 
         end_effector_name_ = declare_parameter<std::string>("end_effector_name", "Unknown");
@@ -754,6 +759,8 @@ private:
                 std::chrono::duration<double>(CONTROL_DT_),
                 std::bind(&DlsReducedController::control_loop, this), timer_callback_group_);
 
+            teleoperation_ready_.store(true, std::memory_order_release);
+
             std::cerr << "====================================================" << std::endl;
             std::cerr << "        Controller Activated. Awaiting input" << std::endl;
             std::cerr << "====================================================" << std::endl;
@@ -764,6 +771,11 @@ private:
 
     void pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     {
+        if (!teleoperation_ready_.load(std::memory_order_acquire))
+        {
+            return;
+        }
+
         if (msg->header.frame_id != tracker_frame_)
         {
             RCLCPP_WARN_THROTTLE(
@@ -843,24 +855,31 @@ private:
 
     void velocity_callback(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
     {
-        std::lock_guard<std::mutex> lock(velocity_mutex_);
-
-        vx_ = msg->twist.linear.x;
-        vy_ = msg->twist.linear.y;
-        vz_ = msg->twist.linear.z;
-
-        wx_ = msg->twist.angular.x;
-        wy_ = msg->twist.angular.y;
-        wz_ = msg->twist.angular.z;
-
-        last_velocity_time_ = std::chrono::steady_clock::now();
-        received_velocity_ = true;
-
-        if (DEBUG_)
+        if (!teleoperation_ready_.load(std::memory_order_acquire))
         {
-            RCLCPP_INFO(get_logger(),
-                "Linear: vx=%.6f vy=%.6f vz=%.6f | Angular wx=%.6f wy=%.6f wz=%.6f",
-                vx_, vy_, vz_, wx_, wy_, wz_);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(velocity_mutex_);
+
+            vx_ = msg->twist.linear.x;
+            vy_ = msg->twist.linear.y;
+            vz_ = msg->twist.linear.z;
+
+            wx_ = msg->twist.angular.x;
+            wy_ = msg->twist.angular.y;
+            wz_ = msg->twist.angular.z;
+
+            last_velocity_time_ = std::chrono::steady_clock::now();
+            received_velocity_ = true;
+
+            if (DEBUG_)
+            {
+                RCLCPP_INFO(get_logger(),
+                    "Linear: vx=%.6f vy=%.6f vz=%.6f | Angular wx=%.6f wy=%.6f wz=%.6f",
+                    vx_, vy_, vz_, wx_, wy_, wz_);
+            }
         }
     }
 

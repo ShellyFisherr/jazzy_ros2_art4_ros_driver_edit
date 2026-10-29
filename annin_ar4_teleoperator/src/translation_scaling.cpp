@@ -1,19 +1,20 @@
 /**
  * @file translation_scaling.cpp
- * @brief 
- * 
-
+ * @brief A system for calibrating the movement scale between robot and human operator. It loads, calculates and saves required data automatically. 
  * 
  * 
  * -------------------------
  * Publishing Topics
  * 
+ * None
+ * 
  * -------------------------
  * Subscribed Topics
  * 
+ * pose_subscription_       /tracker/pose           geometry_msgs::msg::PoseStamped                 (Tracker position in 3d space)
  * 
  * @author Daan Krijnen
- * @date October 13, 2026
+ * @date October 29, 2026
  */
 
 
@@ -83,6 +84,12 @@ public:
     }
 
 private:
+
+    class RestartCalibrationError : public std::runtime_error
+    {
+    public:
+        using std::runtime_error::runtime_error;
+    };
 
     std::string target_frame_;
     std::string tracker_frame_;
@@ -385,7 +392,7 @@ private:
 
         if (maximum_deviation > maximum_capture_spread_)
         {
-            throw std::runtime_error("Tracker moved during capture. Restart and hold it still.");
+            throw RestartCalibrationError("Tracker moved during capture. Restart and hold it still.");
         }
 
         return average;
@@ -403,19 +410,19 @@ private:
 
         if (tracker_distance < minimum_tracker_movement_)
         {
-            throw std::runtime_error("Tracker is below minimum_tracker_movement.");
+            throw RestartCalibrationError("Tracker is below minimum Tracker Movement. Restarting...");
         }
 
         if (robot_distance < minimum_robot_movement_)
         {
-            throw std::runtime_error("Robot is below minimum_robot_movement.");
+            throw std::runtime_error("Robot is below minimum_robot_movement. Edit parameters.");
         }
 
         const double scale = robot_distance / tracker_distance;
 
         if (!std::isfinite(scale) || scale <= 0.0)
         {
-            throw std::runtime_error("calculated scale is invalid");
+            throw RestartCalibrationError("Calculated scale is invalid (negative). Restarting...");
         }
 
         return scale;
@@ -520,59 +527,110 @@ private:
 
     void run_calibration()
     {
-        try
+        while (rclcpp::ok())
         {
-            wait_for_tracker();
-
-            if (!rclcpp::ok())
+            try
             {
+                wait_for_tracker();
+
+                if (!rclcpp::ok())
+                {
+                    return;
+                }
+
+                std::cerr
+                    << "===================================================="
+                    << std::endl;
+                std::cerr
+                    << "                Starting Calibration"
+                    << std::endl;
+                std::cerr
+                    << "===================================================="
+                    << std::endl;
+
+                const Eigen::Vector3d tracker_near_target =
+                    capture_position(
+                        "Hold the tracker close to the body for the near calibration position.");
+
+                std::cerr << "Captured near position in "
+                        << target_frame_ << " ["
+                        << tracker_near_target.x() << ", "
+                        << tracker_near_target.y() << ", "
+                        << tracker_near_target.z() << "]"
+                        << std::endl;
+
+                const Eigen::Vector3d tracker_far_target =
+                    capture_position(
+                        "Hold the tracker with a stretched arm forwards.");
+
+                std::cerr << "Captured far position in "
+                        << target_frame_ << " ["
+                        << tracker_far_target.x() << ", "
+                        << tracker_far_target.y() << ", "
+                        << tracker_far_target.z() << "]"
+                        << std::endl;
+
+                const double scale = calculate_scale(
+                    tracker_near_target,
+                    tracker_far_target);
+
+                std::string save_error;
+
+                if (!save_results(
+                        tracker_near_target,
+                        tracker_far_target,
+                        scale,
+                        save_error))
+                {
+                    throw std::runtime_error(
+                        "Could not save calibration result: " + save_error);
+                }
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Calculated scale: %.6f",
+                    scale);
+
+                RCLCPP_INFO(
+                    get_logger(),
+                    "Results saved to: %s",
+                    result_file_.c_str());
+
+                rclcpp::shutdown();
                 return;
             }
-
-            const Eigen::Vector3d tracker_near_target = capture_position(
-                "Hold the tracker close to the body for the near calibration position.");
-
-            RCLCPP_INFO(get_logger(),
-                "Captured near position in %s: [%.4f, %.4f, %.4f]",
-                target_frame_.c_str(),
-                tracker_near_target.x(),
-                tracker_near_target.y(),
-                tracker_near_target.z());
-
-            const Eigen::Vector3d tracker_far_target = capture_position(
-                "Hold the tracker with a stretched arm forwards.");
-
-            RCLCPP_INFO(get_logger(),
-                "Captured far position in %s: [%.4f, %.4f, %.4f]",
-                target_frame_.c_str(),
-                tracker_far_target.x(),
-                tracker_far_target.y(),
-                tracker_far_target.z());
-
-            const double scale = calculate_scale(tracker_near_target, tracker_far_target);
-
-            std::string save_error;
-            if (!save_results(tracker_near_target, tracker_far_target, scale, save_error))
+            catch (const RestartCalibrationError & ex)
             {
-                throw std::runtime_error("Could not save calibration result: " + save_error);
-            }
+                if (!rclcpp::ok())
+                {
+                    return;
+                }
 
-            RCLCPP_INFO(get_logger(),
-                "Calculated scale: %.6f",
-                scale);
-            RCLCPP_INFO(get_logger(),
-                "Results saved to: %s",
-                result_file_.c_str());
-
-            rclcpp::shutdown();
-        }
-        catch(const std::exception&  ex)
-        {
-            if (rclcpp::ok())
-            {
-                RCLCPP_ERROR(get_logger(),
-                    "Translation scaling calibration failed: %s",
+                RCLCPP_WARN(
+                    get_logger(),
+                    "%s",
                     ex.what());
+
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Please hold the tracker still. Restarting from the near position.");
+
+                // Retry the complete calibration sequence.
+                // received_pose_ remains true, so waiting for the first
+                // tracker pose again is unnecessary.
+                continue;
+            }
+            catch (const std::exception & ex)
+            {
+                if (rclcpp::ok())
+                {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Translation scaling calibration failed: %s",
+                        ex.what());
+                }
+
+                return;
             }
         }
     }

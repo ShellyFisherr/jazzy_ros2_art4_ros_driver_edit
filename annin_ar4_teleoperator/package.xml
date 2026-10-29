@@ -3,7 +3,7 @@
 <package format="3">
   <name>annin_ar4_teleoperator</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>System for teleoperation using SteamVR compatible trackers and the AR4 mk5 robot as a base.</description>
   <maintainer email="d.f.j.krijnen@student.tue.nl">hamgist</maintainer>
   <license>MIT</license>
 
